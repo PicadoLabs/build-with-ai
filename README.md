@@ -248,6 +248,23 @@ Three deterministic documentation files are generated:
 
 ---
 
+To write these files into a separate directory without replacing the project's
+documentation, use `--out-dir` (or `-o`):
+
+```bash
+npx build-with-ai export --out-dir ./docs
+npx build-with-ai export -o ./dist/documentation
+npx build-with-ai export --out-dir ./docs --dry-run
+```
+
+The directory is created recursively if needed. Relative paths are resolved from
+the current project directory; absolute paths are also supported. All three files
+are written beneath the output directory, including `.buildwithai/CONTEXT.md`.
+State, context, and history are still read from the current project. Without this
+option, export continues to write to the current project directory. Combine it
+with `--dry-run` to preview the target paths without creating directories or
+changing existing files.
+
 ## Commands Reference
 
 | Command | Description |

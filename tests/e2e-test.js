@@ -476,6 +476,39 @@ async function executeFullE2ETest() {
     const contextMdContent = fs.readFileSync(path.join(testDir, '.buildwithai', 'CONTEXT.md'), 'utf8');
     assert(contextMdContent.includes('Project Context & Architecture Decisions'), 'CONTEXT.md check');
 
+    const sourceFiles = ['README.md', 'BUILD_LOG.md', '.buildwithai/CONTEXT.md', '.buildwithai/state.json', '.buildwithai/context.json'];
+    const sourceContents = sourceFiles.map(file => fs.readFileSync(path.join(testDir, file), 'utf8'));
+    const withoutExportTimestamp = content => content.split('\n').filter(line => !line.startsWith('> Automatically generated from ')).join('\n');
+    for (const [flag, target] of [
+      ['--out-dir', 'docs/nested output'],
+      ['-o', path.join(testDir, 'absolute output')]
+    ]) {
+      const outputDir = path.resolve(testDir, target);
+      const preview = () => execFileSync(process.execPath, [CLI_BIN, 'export', '--dry-run', flag, target], {
+        cwd: testDir, encoding: 'utf8'
+      });
+      const previewOutput = preview();
+      for (const file of ['README.md', 'BUILD_LOG.md', '.buildwithai/CONTEXT.md']) {
+        assert(previewOutput.includes(path.relative(testDir, path.join(outputDir, file))), 'Dry run lists custom output paths');
+      }
+      assert(!fs.existsSync(outputDir), 'Dry run does not create the output directory');
+      execFileSync(process.execPath, [CLI_BIN, 'export', flag, target], { cwd: testDir });
+      assert.strictEqual(fs.readFileSync(path.join(outputDir, 'README.md'), 'utf8'), readmeContent);
+      assert(fs.readFileSync(path.join(outputDir, 'BUILD_LOG.md'), 'utf8').includes('### MVP Specification'));
+      assert.strictEqual(withoutExportTimestamp(fs.readFileSync(path.join(outputDir, '.buildwithai', 'CONTEXT.md'), 'utf8')), withoutExportTimestamp(contextMdContent));
+      const exportedFiles = ['README.md', 'BUILD_LOG.md', '.buildwithai/CONTEXT.md'];
+      const beforePreview = exportedFiles.map(file => fs.readFileSync(path.join(outputDir, file), 'utf8'));
+      const beforeTimes = exportedFiles.map(file => fs.statSync(path.join(outputDir, file)).mtimeMs);
+      preview();
+      exportedFiles.forEach((file, index) => {
+        assert.strictEqual(fs.readFileSync(path.join(outputDir, file), 'utf8'), beforePreview[index]);
+        assert.strictEqual(fs.statSync(path.join(outputDir, file)).mtimeMs, beforeTimes[index], 'Dry run does not rewrite existing output');
+      });
+      sourceFiles.forEach((file, index) => {
+        assert.strictEqual(fs.readFileSync(path.join(testDir, file), 'utf8'), sourceContents[index], `${file} is unchanged`);
+      });
+    }
+
     report['Export'] = 'PASS';
     console.log('   ✔ Export generated README.md, BUILD_LOG.md, and CONTEXT.md deterministically.\n');
 
