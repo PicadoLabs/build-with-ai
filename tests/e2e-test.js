@@ -110,6 +110,7 @@ async function executeFullE2ETest() {
     'Back': 'FAIL',
     'Status': 'FAIL',
     'Resume': 'FAIL',
+    'History': 'FAIL',
     'Export dry run': 'Fail',
     'Export': 'FAIL',
     'Reset': 'FAIL',
@@ -119,6 +120,9 @@ async function executeFullE2ETest() {
   const issues = [];
 
   try {
+    assert.throws(() => execFileSync(process.execPath, [CLI_BIN, 'history'], {
+      cwd: testDir, encoding: 'utf8', stdio: 'pipe'
+    }), error => error.status === 1 && error.stderr.includes('No project found'));
     // -------------------------------------------------------------
     // Template discovery works before project initialization.
     const listOutput = (args) => execFileSync(process.execPath, [CLI_BIN, 'list', ...args], {
@@ -182,6 +186,7 @@ async function executeFullE2ETest() {
     assert.strictEqual(ctxObj.project.idea, 'A web app to track daily expenses by category');
 
     report['Init'] = 'PASS';
+    assert(execFileSync(process.execPath, [CLI_BIN, 'history'], { cwd: testDir, encoding: 'utf8' }).includes('No recorded step history yet'));
     console.log('   ✔ Initialized state.json, context.json, and history/ with currentStep = 1.\n');
 
     // -------------------------------------------------------------
@@ -280,6 +285,19 @@ async function executeFullE2ETest() {
     assert(step2HistText.includes('### MVP Specification'), 'History contains full AI response');
 
     const ctxAfterStep2 = JSON.parse(fs.readFileSync(path.join(testDir, '.buildwithai', 'context.json'), 'utf8'));
+    const historyOutput = args => execFileSync(process.execPath, [CLI_BIN, 'history', ...args], {
+      cwd: testDir, encoding: 'utf8', timeout: 10000, stdio: 'pipe'
+    });
+    const historyList = historyOutput([]);
+    assert(historyList.includes('step-02.md'), 'History lists recorded filenames');
+    assert(!historyList.includes('step-01.md'), 'Summary-only steps do not invent log files');
+    const step2ModifiedAt = fs.statSync(path.join(testDir, '.buildwithai', 'history', 'step-02.md')).mtime.toISOString();
+    assert(historyList.includes(step2ModifiedAt), 'History lists modification timestamps');
+    assert.strictEqual(historyOutput(['2']), step2HistText, 'History prints the complete saved markdown');
+    for (const step of ['0', '-1', '1.5', '2abc', '../2', '9007199254740992', '999']) {
+      assert.throws(() => historyOutput(['--', step]), error => error.status === 1 && /positive integer|No recorded history/.test(error.stderr));
+    }
+    report['History'] = 'PASS';
     assert(!JSON.stringify(ctxAfterStep2).includes('### MVP Specification'), 'Full markdown NOT in context.json');
     assert.strictEqual(ctxAfterStep2.decisions.mvpFeatures, 'Add/edit expenses, category breakdown, CSV export');
 
