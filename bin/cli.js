@@ -544,12 +544,13 @@ program
 program
   .command('export')
   .description('Export README.md, BUILD_LOG.md, and .buildwithai/CONTEXT.md.')
-  .action(() => {
+  .option('--dry-run', 'Show which files would be generated without writing them')
+  .action((options) => {
     if (!isInitialized()) {
       logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
       process.exit(1);
     }
-    runExport();
+    runExport(process.cwd(), { dryRun: options.dryRun });
   });
 
 // ─────────────────────────────────────────────────

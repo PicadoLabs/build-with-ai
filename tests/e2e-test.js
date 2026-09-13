@@ -110,6 +110,7 @@ async function executeFullE2ETest() {
     'Back': 'FAIL',
     'Status': 'FAIL',
     'Resume': 'FAIL',
+    'Export dry run': 'Fail',
     'Export': 'FAIL',
     'Reset': 'FAIL',
     'Error handling': 'FAIL'
@@ -429,6 +430,28 @@ async function executeFullE2ETest() {
 
     report['Resume'] = 'PASS';
     console.log('   ✔ Resume restored project progress, current step, and context decisions.\n');
+
+    // -------------------------------------------------------------
+    // Step 10.5: Export Dry Run
+    // -------------------------------------------------------------
+    console.log('🔹 10.5. Testing `build-with-ai export --dry-run`...');
+
+    assert(!fs.existsSync(path.join(testDir, 'README.md')), 'README.md should not exist before export');
+    assert(!fs.existsSync(path.join(testDir, 'BUILD_LOG.md')), 'BUILD_LOG.md should not exist before export');
+    assert(!fs.existsSync(path.join(testDir, '.buildwithai', 'CONTEXT.md')), 'CONTEXT.md should not exist before export');
+
+    const dryRunRes = runSync(['export', '--dry-run'], testDir);
+    assert(dryRunRes.stdout.includes('README.md'), 'Dry run lists README.md');
+    assert(dryRunRes.stdout.includes('BUILD_LOG.md'), 'Dry run lists BUILD_LOG.md');
+    assert(dryRunRes.stdout.includes('CONTEXT.md'), 'Dry run lists CONTEXT.md');
+    assert(dryRunRes.stdout.toLowerCase().includes('no files'), 'Dry run states that no files were written');
+
+    assert(!fs.existsSync(path.join(testDir, 'README.md')), 'README.md still absent after dry run');
+    assert(!fs.existsSync(path.join(testDir, 'BUILD_LOG.md')), 'BUILD_LOG.md still absent after dry run');
+    assert(!fs.existsSync(path.join(testDir, '.buildwithai', 'CONTEXT.md')), 'CONTEXT.md still absent after dry run');
+
+    report['Export dry run'] = 'PASS';
+    console.log('   ✔ Dry run listed target files and wrote nothing to disk.\n');
 
     // -------------------------------------------------------------
     // Step 11: Export Command
