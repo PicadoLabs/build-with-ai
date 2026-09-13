@@ -11,6 +11,7 @@ const {
   loadContext,
   saveContext,
   saveHistory,
+  getAllHistory,
   resetProject
 } = require('../lib/state');
 const { loadTemplates, getTemplate, resolveStepPrompt } = require('../lib/promptEngine');
@@ -28,6 +29,37 @@ program
   .name('build-with-ai')
   .description('A minimal, zero-API CLI guiding developers through building software projects with AI.')
   .version('1.1.1');
+
+program
+  .command('history [stepNumber]')
+  .description('List recorded step logs or display the full markdown for a step.')
+  .action((stepNumber) => {
+    if (!isInitialized()) {
+      logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
+      process.exit(1);
+    }
+    if (stepNumber !== undefined && (!/^\d+$/.test(stepNumber) || !Number.isSafeInteger(Number(stepNumber)) || Number(stepNumber) < 1)) {
+      logger.error('Step number must be a positive integer. Example: `npx build-with-ai history 2`.');
+      process.exit(1);
+    }
+    const history = getAllHistory();
+    if (stepNumber !== undefined) {
+      const entry = history.find(item => item.step === Number(stepNumber));
+      if (!entry) {
+        logger.error(`No recorded history for step ${stepNumber}. Run \`npx build-with-ai history\` to list available logs.`);
+        process.exit(1);
+      }
+      process.stdout.write(entry.content);
+      return;
+    }
+    if (history.length === 0) {
+      console.log('No recorded step history yet. Complete a step with `npx build-with-ai done` first.');
+      return;
+    }
+    for (const entry of history) {
+      console.log(`${entry.filename}  ${entry.modifiedAt}`);
+    }
+  });
 
 // ─────────────────────────────────────────────────
 // 1. `init` command
