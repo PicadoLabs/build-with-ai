@@ -69,6 +69,79 @@ async function runIsolatedClipboardFallback(moduleSource) {
 }
 
 async function runTests() {
+  const atomicDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-atomic-'));
+  const originalWrite = fs.writeFileSync;
+  const originalRename = fs.renameSync;
+  try {
+    for (const [filename, save, load] of [
+      ['state.json', saveState, loadState],
+      ['context.json', saveContext, loadContext]
+    ]) {
+      save({ value: 'original' }, atomicDir);
+      const target = path.join(getStorageDir(atomicDir), filename);
+      const original = fs.readFileSync(target, 'utf8');
+      const stale = `${target}.tmp`;
+      originalWrite(stale, '{interrupted', 'utf8');
+      assert.strictEqual(load(atomicDir).value, 'original', 'Ignore incomplete temporary artifacts');
+      for (const failure of ['write', 'rename']) {
+        let attempted = false;
+        try {
+          if (failure === 'write') {
+            fs.writeFileSync = (file, ...args) => {
+              if (path.dirname(file) === path.dirname(target)) {
+                attempted = true;
+                originalWrite(file, '{partial', 'utf8');
+                throw new Error('simulated write failure');
+              }
+              return originalWrite(file, ...args);
+            };
+          } else {
+            fs.renameSync = (from, to) => {
+              attempted = true;
+              assert.strictEqual(to, target);
+              assert.strictEqual(path.dirname(from), path.dirname(to));
+              assert.strictEqual(JSON.parse(fs.readFileSync(from, 'utf8')).value, 'replacement');
+              throw new Error('simulated rename failure');
+            };
+          }
+          assert.throws(() => save({ value: 'replacement' }, atomicDir), /simulated/);
+          assert(attempted, 'Exercise the failing filesystem operation');
+        } finally {
+          fs.writeFileSync = originalWrite;
+          fs.renameSync = originalRename;
+        }
+        assert.strictEqual(fs.readFileSync(target, 'utf8'), original, 'Failed save preserves original bytes');
+        assert.deepStrictEqual(fs.readdirSync(getStorageDir(atomicDir)).filter(file => file.startsWith(filename)), [filename, `${filename}.tmp`], 'Clean only the temporary file owned by this save');
+      }
+      save({ value: 'recovered' }, atomicDir);
+      assert.strictEqual(load(atomicDir).value, 'recovered', 'Save succeeds despite stale temporary artifacts');
+      assert.strictEqual(fs.readFileSync(stale, 'utf8'), '{interrupted');
+      const recovered = fs.readFileSync(target, 'utf8');
+      const circular = {};
+      circular.self = circular;
+      assert.throws(() => save(circular, atomicDir), /Unable to save/);
+      assert.strictEqual(fs.readFileSync(target, 'utf8'), recovered, 'Serialization errors preserve saved data');
+
+      const logger = require('../lib/logger');
+      const originalError = logger.error;
+      const messages = [];
+      try {
+        logger.error = message => messages.push(message);
+        originalWrite(target, '{invalid', 'utf8');
+        assert.deepStrictEqual(load(atomicDir), filename === 'state.json' ? null : {});
+        assert(messages[0].includes(target) && messages[0].includes('restore valid JSON'), 'Corruption diagnostic identifies the file and recovery action');
+        assert.strictEqual(fs.readFileSync(target, 'utf8'), '{invalid', 'Reading does not alter corrupted data');
+      } finally {
+        logger.error = originalError;
+      }
+    }
+  } finally {
+    fs.writeFileSync = originalWrite;
+    fs.renameSync = originalRename;
+    fs.rmSync(atomicDir, { recursive: true, force: true });
+  }
+  console.log('Atomic persistence tests passed.');
+
   // Context paths: preserve existing dot-separator semantics and value types.
   const deepContext = {};
   setByPath(deepContext, 'decisions.auth.oauth.providers.google.clientId', 'client-123');
