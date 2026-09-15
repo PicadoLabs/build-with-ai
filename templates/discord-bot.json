@@ -1,0 +1,151 @@
+{
+  "type": "discord-bot",
+  "title": "Discord Bot Workflow",
+  "description": "Step-by-step guidance for designing, building, testing, securing, and hosting a Discord.js application.",
+  "steps": [
+    {
+      "id": "step-01-bot-purpose",
+      "phase": "Discovery",
+      "title": "Bot Purpose & Core Command Scope",
+      "goal": "Define what the bot does, who uses it, and the core set of commands it needs to support.",
+      "requires": ["project.name", "project.idea"],
+      "writes": ["decisions.botPurpose", "decisions.coreCommands"],
+      "expectedOutput": "A clear statement of the bot's purpose, target servers/users, and a prioritized list of core commands.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": [],
+      "prompt": "I am building a Discord bot called \"{{project.name}}\".\nThe goal is: {{project.idea}}.\nMy experience level is {{project.experienceLevel}}.\n\nAct as a Senior Discord Bot Architect:\n1. Summarize the bot's core purpose and the type of servers/communities it targets.\n2. List the core commands the bot must support for V1, grouped by category.\n3. List explicit non-goals to keep V1 scope tight."
+    },
+    {
+      "id": "step-02-tech-stack",
+      "phase": "Tech Stack",
+      "title": "Runtime & Discord.js Library Setup",
+      "goal": "Select the runtime, Discord API library, and project structure for the bot.",
+      "requires": ["project.experienceLevel", "decisions.coreCommands"],
+      "writes": ["decisions.runtime", "decisions.discordLibrary"],
+      "expectedOutput": "Chosen runtime (Node.js version), Discord library (discord.js v14), and recommended project folder structure.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": ["package.json"],
+      "prompt": "For \"{{project.name}}\" supporting {{decisions.coreCommands}}, recommend the optimal Discord bot stack for a {{project.experienceLevel}} developer:\n1. Runtime and Node.js version.\n2. Discord API library (e.g. discord.js v14) and why it fits.\n3. Recommended project folder structure (commands/, events/, config/)."
+    },
+    {
+      "id": "step-03-bot-config",
+      "phase": "Setup",
+      "title": "Discord Developer Portal & Application Configuration",
+      "goal": "Register the bot application, generate credentials, and configure the invite/OAuth2 setup.",
+      "requires": ["decisions.discordLibrary"],
+      "writes": ["decisions.botConfig"],
+      "expectedOutput": "Steps to create the application in the Discord Developer Portal, bot token handling, and an OAuth2 invite URL with the right scopes.",
+      "recommendedAI": "GPT-4o",
+      "targetFiles": [".env.example", "src/config/index.js"],
+      "prompt": "Guide me through configuring the Discord application for \"{{project.name}}\" using {{decisions.discordLibrary}}:\n1. Steps to create the application and bot user in the Discord Developer Portal.\n2. How to securely store the bot token and client ID (.env.example).\n3. The OAuth2 invite URL scopes needed (bot, applications.commands)."
+    },
+    {
+      "id": "step-04-intents-permissions",
+      "phase": "Permissions",
+      "title": "Gateway Intents & Bot Permissions",
+      "goal": "Select the minimum required gateway intents and Discord permission flags for the bot's commands.",
+      "requires": ["decisions.botConfig", "decisions.coreCommands"],
+      "writes": ["decisions.intents", "decisions.permissions"],
+      "expectedOutput": "List of required gateway intents and a permissions integer/flag list matching least-privilege principles.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": ["src/index.js"],
+      "prompt": "Determine the minimum required access for \"{{project.name}}\" to support {{decisions.coreCommands}}:\n1. Required Gateway Intents (e.g. Guilds, GuildMessages, MessageContent) and why each is needed.\n2. Minimum Discord permission flags for the bot role, following least privilege.\n3. Notes on privileged intents that require verification/approval for large bots."
+    },
+    {
+      "id": "step-05-command-architecture",
+      "phase": "Design",
+      "title": "Command Architecture (Slash Commands)",
+      "goal": "Design the command registration pattern, subcommand structure, and interaction handling flow.",
+      "requires": ["decisions.coreCommands", "decisions.intents"],
+      "writes": ["decisions.commandArchitecture"],
+      "expectedOutput": "Slash command definitions (name, description, options), subcommand grouping, and the interaction routing pattern.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": ["src/commands/"],
+      "prompt": "Design the slash command architecture for \"{{project.name}}\":\n1. Command definitions for {{decisions.coreCommands}} (name, description, options, subcommands).\n2. Folder/file convention for organizing command modules.\n3. Interaction routing pattern for dispatching `interactionCreate` events to the right command handler."
+    },
+    {
+      "id": "step-06-command-implementation",
+      "phase": "Business Logic",
+      "title": "Command Handlers & Deployment Script",
+      "goal": "Implement the command handler logic and the script that registers commands with Discord.",
+      "requires": ["decisions.commandArchitecture"],
+      "writes": ["decisions.commandHandlers"],
+      "expectedOutput": "Command handler files implementing each command's execute logic, and a deploy-commands script for registering them.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": ["src/commands/", "src/deploy-commands.js"],
+      "prompt": "Implement the command handlers for \"{{project.name}}\" based on {{decisions.commandArchitecture}}:\n1. A command handler file per command with input validation and clear replies.\n2. A `deploy-commands.js` script that registers slash commands with Discord's REST API.\n3. Consistent reply formatting (embeds vs plain text) across commands."
+    },
+    {
+      "id": "step-07-persistence",
+      "phase": "Database",
+      "title": "Persistence & Data Storage",
+      "goal": "Choose a storage solution for any per-guild or per-user data the bot needs to remember.",
+      "requires": ["decisions.coreCommands"],
+      "writes": ["decisions.database", "decisions.dataModels"],
+      "expectedOutput": "Chosen storage engine (e.g. SQLite, PostgreSQL, or a JSON store for small bots) and the data models it needs to persist.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": ["src/db/", "prisma/schema.prisma"],
+      "prompt": "Design the persistence layer for \"{{project.name}}\":\n1. Storage engine choice appropriate for the bot's scale (e.g. SQLite for small bots, PostgreSQL for larger ones).\n2. Data models needed to support {{decisions.coreCommands}} (e.g. guild settings, user stats).\n3. A simple data-access module commands can call into."
+    },
+    {
+      "id": "step-08-event-handling",
+      "phase": "Business Logic",
+      "title": "Event Handling & Bot Lifecycle",
+      "goal": "Implement the client's core lifecycle events and structure the event-loading system.",
+      "requires": ["decisions.discordLibrary"],
+      "writes": ["decisions.eventHandlers"],
+      "expectedOutput": "Event handler files for ready, interactionCreate, guildCreate, and error events, plus a dynamic event loader.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": ["src/events/"],
+      "prompt": "Implement the event handling system for \"{{project.name}}\" using {{decisions.discordLibrary}}:\n1. Handlers for `ready`, `interactionCreate`, `guildCreate`, and `error` events.\n2. A dynamic event loader that registers all files in `src/events/`.\n3. Graceful shutdown handling (SIGINT/SIGTERM) to disconnect the client cleanly."
+    },
+    {
+      "id": "step-09-error-handling",
+      "phase": "Reliability",
+      "title": "Error Handling & Logging",
+      "goal": "Add centralized error handling for command failures and structured logging for observability.",
+      "requires": ["decisions.commandHandlers"],
+      "writes": ["decisions.errorHandling"],
+      "expectedOutput": "A centralized error handler wrapping command execution, user-facing error replies, and a structured logger.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": ["src/lib/logger.js", "src/lib/errorHandler.js"],
+      "prompt": "Add robust error handling and logging to \"{{project.name}}\":\n1. A wrapper around command execution that catches errors and sends a friendly ephemeral reply.\n2. A structured logger (level, timestamp, context) for debugging in production.\n3. Guidance on what should never be logged (tokens, user PII)."
+    },
+    {
+      "id": "step-10-testing",
+      "phase": "Testing",
+      "title": "Testing Strategy",
+      "goal": "Define how command logic and utility functions will be tested without needing a live Discord connection.",
+      "requires": ["decisions.commandHandlers"],
+      "writes": ["decisions.testSuite"],
+      "expectedOutput": "Unit tests for command logic with mocked interaction objects, and a test runner command.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": ["tests/"],
+      "prompt": "Write a testing strategy for \"{{project.name}}\":\n1. Unit tests for command handler logic using mocked Discord interaction objects.\n2. Tests for the data-access layer against a test database.\n3. Test runner script and CI-friendly configuration."
+    },
+    {
+      "id": "step-11-security",
+      "phase": "Security",
+      "title": "Security & Rate Limiting",
+      "goal": "Protect the bot from abuse, permission escalation, and command spam.",
+      "requires": ["decisions.permissions"],
+      "writes": ["decisions.securityConfig"],
+      "expectedOutput": "Per-user/per-guild command cooldowns, permission checks in handlers, and input sanitization for any user-supplied text.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": ["src/lib/cooldowns.js"],
+      "prompt": "Harden the security of \"{{project.name}}\":\n1. Command cooldown/rate limiting per user and per guild to prevent spam.\n2. Permission checks inside handlers that require elevated Discord permissions.\n3. Input sanitization for any user-supplied text used in replies or storage, to prevent injection or markdown abuse."
+    },
+    {
+      "id": "step-12-hosting",
+      "phase": "Deployment",
+      "title": "Hosting & Deployment",
+      "goal": "Deploy the bot to a always-on host and configure process management and environment variables.",
+      "requires": ["decisions.runtime", "decisions.database"],
+      "writes": ["decisions.hostingPlatform"],
+      "expectedOutput": "Recommended hosting platform, process manager configuration, and production environment variable setup.",
+      "recommendedAI": "GPT-4o",
+      "targetFiles": ["Dockerfile", "ecosystem.config.js"],
+      "prompt": "Deploy \"{{project.name}}\" to production:\n1. Recommended always-on hosting platform for a Discord bot (e.g. Railway, Fly.io, a VPS with PM2).\n2. Process manager configuration (e.g. PM2 ecosystem file) for automatic restarts.\n3. Production environment variable setup and secrets handling for the bot token."
+    }
+  ]
+}
