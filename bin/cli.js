@@ -16,7 +16,7 @@ const {
 const { loadTemplates, getTemplate, resolveStepPrompt } = require('../lib/promptEngine');
 const { setByPath, getByPath, flattenObject } = require('../lib/contextBuilder');
 const { copyToClipboard } = require('../lib/clipboard');
-const { displayStep, renderProgressBar, displayBanner } = require('../lib/ui');
+const { displayStep, renderProgressBar, displayBanner, formatElapsedTime } = require('../lib/ui');
 const { runInit } = require('../lib/init');
 const { runResume } = require('../lib/resume');
 const { runExport } = require('../lib/export');
@@ -488,6 +488,14 @@ program
     console.log(`${pc.bold('Experience:')} ${state.experienceLevel}`);
     console.log(`${pc.bold('Idea:')} ${state.projectIdea}`);
     console.log(`${pc.bold('Progress:')} ${renderProgressBar(completedList.length, totalSteps)}`);
+    const now = Date.now();
+    const updatedAge = formatElapsedTime(state.updatedAt, now);
+    const completedSteps = new Set(completedList.filter(step => Number.isInteger(step) && step >= 1 && step <= totalSteps));
+    const exportReady = totalSteps > 0 && completedSteps.size === totalSteps;
+    console.log(`${pc.bold('Time Elapsed:')} ${formatElapsedTime(state.startedAt, now)}`);
+    console.log(`${pc.bold('Last Updated:')} ${updatedAge === 'Unknown' ? updatedAge : `${updatedAge} ago`}`);
+    console.log(`${pc.bold('Decisions Count:')} ${Object.keys(flattenObject(context.decisions || {})).length}`);
+    console.log(`${pc.bold('Export Readiness:')} ${exportReady ? 'Ready' : 'In progress'}`);
     console.log();
 
     if (template && template.steps) {
