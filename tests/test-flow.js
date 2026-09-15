@@ -177,6 +177,20 @@ async function runTests() {
   assert(flutterAppTemplate.steps[0].id === 'step-01-discovery', 'Flutter Step 1 should be discovery');
   assert(Array.isArray(flutterAppTemplate.steps[0].requires), 'Flutter Step 1 requires must be array');
   assert(Array.isArray(flutterAppTemplate.steps[0].writes), 'Flutter Step 1 writes must be array');
+
+  const discordBotTemplate = getTemplate('discord-bot');
+  assert(discordBotTemplate !== null, 'discord-bot template must exist');
+  assert(discordBotTemplate.stepCount >= 10 && discordBotTemplate.stepCount <= 20, `discord-bot template should have 10-20 steps, found ${discordBotTemplate.stepCount}`);
+  assert(discordBotTemplate.steps[0].id === 'step-01-bot-purpose', 'Discord bot Step 1 should be bot purpose');
+  assert(Array.isArray(discordBotTemplate.steps[0].requires), 'Discord bot Step 1 requires must be array');
+  assert(Array.isArray(discordBotTemplate.steps[0].writes), 'Discord bot Step 1 writes must be array');
+
+  const discordStep1 = discordBotTemplate.steps[0];
+  const discordContext = { project: { name: 'ChaiBot', idea: 'A news and debate bot.', experienceLevel: 'Beginner' } };
+  const discordRes1 = resolveStepPrompt(discordStep1, discordContext);
+  assert(discordRes1.resolvedPrompt.includes('ChaiBot'), 'Discord bot Step 1 prompt must resolve project.name');
+  assert(discordRes1.warnings.length === 0, 'Discord bot Step 1 should resolve with no warnings given project.* context');
+
   console.log('  ✔ Templates loaded successfully with dynamic step counts.');
 
   // Remote templates must fail in bounded time when the server stalls.
