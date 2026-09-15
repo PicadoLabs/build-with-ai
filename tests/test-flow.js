@@ -154,6 +154,18 @@ async function runTests() {
   }
   console.log('Atomic persistence tests passed.');
 
+  const { formatElapsedTime } = require('../lib/ui');
+  const metricsNow = Date.parse('2026-01-03T12:00:00Z');
+  for (const [minutes, expected] of [
+    [0, 'less than a minute'], [1, '1 min'], [2, '2 mins'],
+    [60, '1 hr'], [85, '1 hr 25 mins'], [120, '2 hrs'],
+    [1440, '1 day'], [2880, '2 days'], [-10, 'less than a minute']
+  ]) {
+    assert.strictEqual(formatElapsedTime(new Date(metricsNow - minutes * 60000).toISOString(), metricsNow), expected);
+  }
+  for (const value of [undefined, null, '', 'invalid', 0]) {
+    assert.strictEqual(formatElapsedTime(value, metricsNow), 'Unknown');
+  }
   // Context paths: preserve existing dot-separator semantics and value types.
   const deepContext = {};
   setByPath(deepContext, 'decisions.auth.oauth.providers.google.clientId', 'client-123');
