@@ -356,7 +356,7 @@ npx build-with-ai next --json | node -e "let d='';process.stdin.on('data',c=>d+=
 | `flutter-app` | **Flutter Mobile Application** | 16 | Flutter 3.x, Dart, Riverpod / BLoC, Clean Architecture |
 | `chrome-extension` | **Chrome Browser Extension** | 12 | Manifest V3, Vite, React, Shadow DOM |
 | `ai-agent` | **AI Agent & RAG Pipeline** | 14 | LangChain / LlamaIndex, Vector DB, FastAPI / Express |
-
+| `discord-bot` | **Discord Bot Workflow** | 12 | Node.js, discord.js v14, Slash Commands, SQLite/PostgreSQL |
 ---
 
 ## Architecture & Storage Design
