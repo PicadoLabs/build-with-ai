@@ -593,9 +593,10 @@ async function executeFullE2ETest() {
     console.log(`${k.padEnd(22)} ${v === 'PASS' ? '✅ PASS' : '❌ FAIL'}`);
   }
   console.log('===============================================================');
-  const allPass = Object.values(report).every(v => v === 'PASS');
+  const allPass = issues.length === 0 && Object.values(report).every(v => v === 'PASS');
   console.log(`OVERALL STATUS: ${allPass ? 'PASS' : 'FAIL'}`);
   console.log('===============================================================');
+  if (!allPass) process.exitCode = 1;
 }
 
 executeFullE2ETest();
