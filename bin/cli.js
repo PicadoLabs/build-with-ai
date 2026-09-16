@@ -545,12 +545,13 @@ program
   .command('export')
   .description('Export README.md, BUILD_LOG.md, and .buildwithai/CONTEXT.md.')
   .option('--dry-run', 'Show which files would be generated without writing them')
+  .option('-o, --out-dir <path>', 'Write documentation to a custom output directory')
   .action((options) => {
     if (!isInitialized()) {
       logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
       process.exit(1);
     }
-    runExport(process.cwd(), { dryRun: options.dryRun });
+    runExport(process.cwd(), options);
   });
 
 // ─────────────────────────────────────────────────
