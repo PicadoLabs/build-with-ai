@@ -441,7 +441,11 @@ async function executeFullE2ETest() {
       metricsState.updatedAt = new Date(Date.now() - 5 * 60000).toISOString();
       fs.writeFileSync(metricsStatePath, JSON.stringify(metricsState));
       fs.writeFileSync(metricsContextPath, JSON.stringify({ decisions: { auth: { enabled: false }, retries: 0, features: ['Export'] } }));
-      const metricsOutput = () => execFileSync(process.execPath, [CLI_BIN, 'status'], { cwd: testDir, encoding: 'utf8' });
+      const metricsOutput = () => execFileSync(process.execPath, [CLI_BIN, 'status'], {
+        cwd: testDir,
+        encoding: 'utf8',
+        env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' }
+      });
       const metrics = metricsOutput();
       assert(metrics.includes('Time Elapsed: 1 hr 25 mins'));
       assert(metrics.includes('Last Updated: 5 mins ago'));
