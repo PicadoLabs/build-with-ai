@@ -69,6 +69,18 @@ async function runIsolatedClipboardFallback(moduleSource) {
 }
 
 async function runTests() {
+  const { spawnSync } = require('child_process');
+  const failedE2E = spawnSync(process.execPath, ['-e', `
+    require('child_process').execFileSync = () => {
+      throw new Error('Injected E2E command failure');
+    };
+    require(${JSON.stringify(path.join(__dirname, 'e2e-test.js'))});
+  `], { encoding: 'utf8', timeout: 10000 });
+  assert.ifError(failedE2E.error);
+  assert(failedE2E.stderr.includes('Injected E2E command failure'), 'Exercise the E2E failure handler');
+  assert(failedE2E.stdout.includes('OVERALL STATUS: FAIL'), 'Retain the final failure summary');
+  assert.strictEqual(failedE2E.status, 1, 'Failed E2E runs must fail CI');
+
   const atomicDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-atomic-'));
   const originalWrite = fs.writeFileSync;
   const originalRename = fs.renameSync;
