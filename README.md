@@ -265,6 +265,23 @@ option, export continues to write to the current project directory. Combine it
 with `--dry-run` to preview the target paths without creating directories or
 changing existing files.
 
+### Inspecting Recorded History
+
+List saved step logs with their filenames and last-modified timestamps:
+
+```bash
+npx build-with-ai history
+```
+
+Read the complete saved Markdown for a particular step:
+
+```bash
+npx build-with-ai history 2
+```
+
+Run these commands from an initialized project. Only recorded logs are listed;
+missing logs and invalid step numbers produce a helpful error.
+
 ## Commands Reference
 
 | Command | Description |
