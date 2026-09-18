@@ -431,6 +431,40 @@ async function executeFullE2ETest() {
     assert(statusRes.stdout.includes('System Architecture & High-Level Design'), 'Shows current step');
     assert(statusRes.stdout.includes('SQLite with Prisma ORM'), 'Shows decisions');
 
+    const metricsStatePath = path.join(testDir, '.buildwithai', 'state.json');
+    const metricsContextPath = path.join(testDir, '.buildwithai', 'context.json');
+    const originalMetricsState = fs.readFileSync(metricsStatePath, 'utf8');
+    const originalMetricsContext = fs.readFileSync(metricsContextPath, 'utf8');
+    try {
+      const metricsState = JSON.parse(originalMetricsState);
+      metricsState.startedAt = new Date(Date.now() - 85 * 60000).toISOString();
+      metricsState.updatedAt = new Date(Date.now() - 5 * 60000).toISOString();
+      fs.writeFileSync(metricsStatePath, JSON.stringify(metricsState));
+      fs.writeFileSync(metricsContextPath, JSON.stringify({ decisions: { auth: { enabled: false }, retries: 0, features: ['Export'] } }));
+      const metricsOutput = () => execFileSync(process.execPath, [CLI_BIN, 'status'], {
+        cwd: testDir,
+        encoding: 'utf8',
+        env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' }
+      });
+      const metrics = metricsOutput();
+      assert(metrics.includes('Time Elapsed: 1 hr 25 mins'));
+      assert(metrics.includes('Last Updated: 5 mins ago'));
+      assert(metrics.includes('Decisions Count: 3'));
+      assert(metrics.includes('Export Readiness: In progress'));
+      metricsState.completedSteps = Array.from({ length: metricsState.totalSteps }, (_, index) => index + 1);
+      delete metricsState.startedAt;
+      metricsState.updatedAt = 'invalid';
+      fs.writeFileSync(metricsStatePath, JSON.stringify(metricsState));
+      const legacy = metricsOutput();
+      assert(legacy.includes('Time Elapsed: Unknown') && legacy.includes('Last Updated: Unknown'));
+      assert(legacy.includes('Export Readiness: Ready'));
+      metricsState.completedSteps = Array(metricsState.totalSteps).fill(1);
+      fs.writeFileSync(metricsStatePath, JSON.stringify(metricsState));
+      assert(metricsOutput().includes('Export Readiness: In progress'), 'Duplicate completed steps cannot imply readiness');
+    } finally {
+      fs.writeFileSync(metricsStatePath, originalMetricsState);
+      fs.writeFileSync(metricsContextPath, originalMetricsContext);
+    }
     report['Status'] = 'PASS';
     console.log('   ✔ Status display verified with progress bar, step checklist, and decisions.\n');
 
