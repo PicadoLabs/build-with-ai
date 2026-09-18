@@ -298,7 +298,8 @@ missing logs and invalid step numbers produce a helpful error.
 | `npx build-with-ai jump [stepNumber]` | Jump directly to any step number (interactive step picker fallback). |
 | `npx build-with-ai context [key]` | Inspect all recorded decisions or look up a specific dot-notation key. |
 | `npx build-with-ai set <key> <value>` | Update any decision in `context.json` directly from the terminal. |
-| `npx build-with-ai status` | Display visual progress bar, step status checklist, and recorded decisions. |
+| `npx build-with-ai status [--json]` | Display visual progress bar, checklist, decisions (or structured JSON). |
+| `npx build-with-ai history [stepNumber] [--json]` | Display step logs or full markdown (or structured JSON). |
 | `npx build-with-ai resume` | Welcome-back dashboard summarizing current focus and next action. |
 | `npx build-with-ai export` | Generate `README.md`, `BUILD_LOG.md`, and `.buildwithai/CONTEXT.md`. |
 | `npx build-with-ai list` | List all available built-in templates and their total step counts. |
