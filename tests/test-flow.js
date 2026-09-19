@@ -366,6 +366,34 @@ async function runTests() {
   }
   console.log('  ✔ Stalled remote template fails cleanly without blocking local templates.');
 
+  const remoteServer = http.createServer((req, res) => {
+    if (req.url === '/interrupted.json') {
+      res.writeHead(200, { 'Content-Length': 100, 'Connection': 'close' });
+      res.end('{"title":');
+      return;
+    }
+    res.end(JSON.stringify({ title: 'Remote template', steps: [] }));
+  });
+  await new Promise(resolve => remoteServer.listen(0, '127.0.0.1', resolve));
+  let disconnectDeadline;
+  try {
+    const remoteUrl = `http://127.0.0.1:${remoteServer.address().port}`;
+    const interrupted = await Promise.race([
+      loadRemoteTemplate(`${remoteUrl}/interrupted.json`),
+      new Promise(resolve => {
+        disconnectDeadline = setTimeout(() => resolve('still waiting'), 2000);
+      })
+    ]);
+    assert.strictEqual(interrupted, null,
+      'A disconnected response should fail promptly without waiting for the network timeout');
+    const validRemote = await loadRemoteTemplate(`${remoteUrl}/valid.json`);
+    assert.strictEqual(validRemote.title, 'Remote template', 'Later remote loads should still work');
+    assert(getTemplate('web-app') !== null, 'Built-in templates should remain usable after a disconnect');
+  } finally {
+    clearTimeout(disconnectDeadline);
+    await new Promise(resolve => remoteServer.close(resolve));
+  }
+
   // Create isolated temp workspace
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-test-'));
   console.log(`\n▶ Test 2: State & Storage Management in ${tempDir}`);
