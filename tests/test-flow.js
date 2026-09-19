@@ -69,6 +69,24 @@ async function runIsolatedClipboardFallback(moduleSource) {
 }
 
 async function runTests() {
+  const historyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-history-order-'));
+  try {
+    assert.deepStrictEqual(getAllHistory(historyDir), []);
+    for (const step of [100, 2, 20, 99, 101]) {
+      saveHistory(step, `Response for step ${step}`, historyDir);
+    }
+    const history = getAllHistory(historyDir);
+    assert.deepStrictEqual(history.map(entry => entry.step), [2, 20, 99, 100, 101],
+      'History must stay in numeric order beyond two-digit step numbers');
+    for (const entry of history) {
+      assert.strictEqual(entry.content, `Response for step ${entry.step}`);
+      assert.strictEqual(entry.filename, `step-${String(entry.step).padStart(2, '0')}.md`);
+      assert(!Number.isNaN(Date.parse(entry.modifiedAt)));
+    }
+  } finally {
+    fs.rmSync(historyDir, { recursive: true, force: true });
+  }
+
   const { spawnSync } = require('child_process');
   const failedE2E = spawnSync(process.execPath, ['-e', `
     require('child_process').execFileSync = () => {
