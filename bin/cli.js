@@ -33,7 +33,8 @@ program
 program
   .command('history [stepNumber]')
   .description('List recorded step logs or display the full markdown for a step.')
-  .action((stepNumber) => {
+  .option('--json', 'Output history entries as JSON')
+  .action((stepNumber, options) => {
     if (!isInitialized()) {
       logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
       process.exit(1);
@@ -43,6 +44,19 @@ program
       process.exit(1);
     }
     const history = getAllHistory();
+    if (options.json) {
+      if (stepNumber !== undefined) {
+        const entry = history.find(item => item.step === Number(stepNumber));
+        if (!entry) {
+          logger.error(`No recorded history for step ${stepNumber}. Run \`npx build-with-ai history\` to list available logs.`);
+          process.exit(1);
+        }
+        console.log(JSON.stringify(entry, null, 2));
+        return;
+      }
+      console.log(JSON.stringify(history, null, 2));
+      return;
+    }
     if (stepNumber !== undefined) {
       const entry = history.find(item => item.step === Number(stepNumber));
       if (!entry) {
@@ -499,7 +513,8 @@ program
 program
   .command('status')
   .description('Display project progress, step status list, and recorded decisions.')
-  .action(() => {
+  .option('--json', 'Output project status as JSON')
+  .action((options) => {
     if (!isInitialized()) {
       logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
       process.exit(1);
@@ -512,6 +527,30 @@ program
     const totalSteps = template ? template.steps.length : state.totalSteps || 0;
     const currentStepNum = state.currentStep || 1;
     const completedList = state.completedSteps || [];
+    const completedSteps = new Set(completedList.filter(step => Number.isInteger(step) && step >= 1 && step <= totalSteps));
+    const exportReady = totalSteps > 0 && completedSteps.size === totalSteps;
+    const decisions = context.decisions || {};
+
+    if (options.json) {
+      const output = {
+        projectName: state.projectName,
+        templateId: state.templateId,
+        templateTitle: state.templateTitle || state.templateId,
+        experienceLevel: state.experienceLevel,
+        projectIdea: state.projectIdea,
+        startedAt: state.startedAt || null,
+        updatedAt: state.updatedAt || null,
+        currentStep: currentStepNum,
+        totalSteps,
+        completedSteps: completedList,
+        completedCount: completedSteps.size,
+        progressPercent: totalSteps > 0 ? Math.round((completedSteps.size / totalSteps) * 100) : 0,
+        exportReady,
+        decisions
+      };
+      console.log(JSON.stringify(output, null, 2));
+      return;
+    }
 
     console.log();
     console.log(pc.bold(pc.cyan(`PROJECT STATUS: ${state.projectName}`)));
@@ -522,8 +561,6 @@ program
     console.log(`${pc.bold('Progress:')} ${renderProgressBar(completedList.length, totalSteps)}`);
     const now = Date.now();
     const updatedAge = formatElapsedTime(state.updatedAt, now);
-    const completedSteps = new Set(completedList.filter(step => Number.isInteger(step) && step >= 1 && step <= totalSteps));
-    const exportReady = totalSteps > 0 && completedSteps.size === totalSteps;
     console.log(`${pc.bold('Time Elapsed:')} ${formatElapsedTime(state.startedAt, now)}`);
     console.log(`${pc.bold('Last Updated:')} ${updatedAge === 'Unknown' ? updatedAge : `${updatedAge} ago`}`);
     console.log(`${pc.bold('Decisions Count:')} ${Object.keys(flattenObject(context.decisions || {})).length}`);
@@ -552,7 +589,6 @@ program
       console.log();
     }
 
-    const decisions = context.decisions || {};
     const entries = Object.entries(decisions);
     if (entries.length > 0) {
       console.log(pc.bold(pc.magenta('RECORDED DECISIONS:')));

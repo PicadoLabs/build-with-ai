@@ -294,6 +294,18 @@ async function executeFullE2ETest() {
     const step2ModifiedAt = fs.statSync(path.join(testDir, '.buildwithai', 'history', 'step-02.md')).mtime.toISOString();
     assert(historyList.includes(step2ModifiedAt), 'History lists modification timestamps');
     assert.strictEqual(historyOutput(['2']), step2HistText, 'History prints the complete saved markdown');
+    const historyJson = JSON.parse(historyOutput(['--json']));
+    assert(Array.isArray(historyJson), 'history --json should return an array');
+    assert.strictEqual(historyJson.length, 1, 'history --json contains one entry');
+    assert.strictEqual(historyJson[0].step, 2);
+    assert.strictEqual(historyJson[0].filename, 'step-02.md');
+    assert(historyJson[0].content.includes('### MVP Specification'));
+
+    const historyStepJson = JSON.parse(historyOutput(['2', '--json']));
+    assert.strictEqual(historyStepJson.step, 2);
+    assert.strictEqual(historyStepJson.filename, 'step-02.md');
+    assert(historyStepJson.content.includes('### MVP Specification'));
+
     for (const step of ['0', '-1', '1.5', '2abc', '../2', '9007199254740992', '999']) {
       assert.throws(() => historyOutput(['--', step]), error => error.status === 1 && /positive integer|No recorded history/.test(error.stderr));
     }
@@ -430,6 +442,16 @@ async function executeFullE2ETest() {
     assert(statusRes.stdout.includes('Problem Discovery & Core Value Proposition'), 'Shows completed step');
     assert(statusRes.stdout.includes('System Architecture & High-Level Design'), 'Shows current step');
     assert(statusRes.stdout.includes('SQLite with Prisma ORM'), 'Shows decisions');
+
+    const statusJsonRes = runSync(['status', '--json'], testDir);
+    const parsedStatus = JSON.parse(statusJsonRes.stdout);
+    assert.strictEqual(parsedStatus.projectName, 'Expense Tracker');
+    assert.strictEqual(parsedStatus.templateId, 'web-app');
+    assert.strictEqual(parsedStatus.totalSteps, 23);
+    assert.strictEqual(typeof parsedStatus.completedCount, 'number');
+    assert.strictEqual(typeof parsedStatus.progressPercent, 'number');
+    assert.strictEqual(typeof parsedStatus.exportReady, 'boolean');
+    assert(parsedStatus.decisions && typeof parsedStatus.decisions === 'object');
 
     const metricsStatePath = path.join(testDir, '.buildwithai', 'state.json');
     const metricsContextPath = path.join(testDir, '.buildwithai', 'context.json');
