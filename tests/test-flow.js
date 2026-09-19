@@ -288,6 +288,18 @@ async function runTests() {
   assert(discordRes1.resolvedPrompt.includes('ChaiBot'), 'Discord bot Step 1 prompt must resolve project.name');
   assert(discordRes1.warnings.length === 0, 'Discord bot Step 1 should resolve with no warnings given project.* context');
 
+  const aiOrchestration = getTemplate('ai-orchestration');
+  assert(aiOrchestration !== null, 'ai-orchestration template must exist');
+  assert.strictEqual(aiOrchestration.stepCount, 14, 'ai-orchestration template should have exactly 14 steps');
+  assert.strictEqual(aiOrchestration.steps[0].id, 'step-01-system-objective', 'AI Orchestration Step 1 should be system objective');
+  assert(Array.isArray(aiOrchestration.steps[0].requires), 'AI Orchestration Step 1 requires must be array');
+
+  const aiOrchStep1 = aiOrchestration.steps[0];
+  const aiOrchContext = { project: { name: 'AutoDev', idea: 'Autonomous software developer crew', experienceLevel: 'Advanced' } };
+  const aiOrchRes1 = resolveStepPrompt(aiOrchStep1, aiOrchContext);
+  assert(aiOrchRes1.resolvedPrompt.includes('AutoDev'), 'AI Orchestration Step 1 prompt must resolve project.name');
+  assert.strictEqual(aiOrchRes1.warnings.length, 0, 'AI Orchestration Step 1 should resolve with no warnings given project.* context');
+
   console.log('  ✔ Templates loaded successfully with dynamic step counts.');
 
   // Remote templates must fail in bounded time when the server stalls.
