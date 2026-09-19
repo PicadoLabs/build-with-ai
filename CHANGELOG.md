@@ -7,10 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-09-19
+
+### Added
+- **Discord Bot Workflow:** Added comprehensive 12-step guided template (`templates/discord-bot.json`).
+- **History Inspection Command:** Added `build-with-ai history [stepNumber]` to inspect recorded step markdown files with ISO timestamps.
+- **Status Metrics Dashboard:** Enriched `build-with-ai status` with Time Elapsed, Last Updated age, Decisions Count, and Export Readiness.
+- **Export Enhancements:** Added `--out-dir` / `-o` custom output directory support and `--dry-run` non-destructive preview mode.
+- **Template Discovery:** Added `build-with-ai list --search <query>` and `list --json`.
+- **Clipboard Controls:** Added `--no-copy` opt-out and non-interactive `next --raw` / `next --json`.
+
+### Changed
+- **Atomic Persistence:** Upgraded state and context persistence in `lib/state.js` to use atomic temp-file write and rename (`writeJsonAtomic`).
+- **CI Reliability:** Enhanced test runner to strictly exit with non-zero status code on E2E assertion failures.
+- **License:** Updated project licensing to Apache License 2.0.
+
+---
+
 ## [1.1.1] - 2026-08-29
 
 ### Changed
-- Standardized project licensing under single MIT License.
+- Standardized project licensing under Apache License 2.0.
 - Redesigned documentation and repository URLs to align with PicadoLabs ecosystem.
 - Normalized repository line endings via `.gitattributes`.
 - Verified and updated documentation assets for open-source registry readiness.
