@@ -44,7 +44,7 @@
     "copilot",
     "zero-api"
   ],
-  "author": "build-with-ai contributors",
+  "author": "PicadoLabs",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=16.0.0"
@@ -56,4 +56,3 @@
     "picocolors": "^1.1.1"
   }
 }
-

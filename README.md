@@ -17,6 +17,16 @@
 
 ---
 
+
+## The Real-World Problem
+Developers want to build complex applications using AI (like ChatGPT or Claude web interfaces), but they often don't know *what* to ask or in *what order*. They end up with monolithic, broken code because they asked the AI to "build a whole app" in one prompt.
+
+## Why it's Unique (The "Edge")
+- **Zero API / Zero Cost:** Operates purely via the terminal and clipboard. The user pastes the generated prompts into their existing free/paid AI web interface (ChatGPT/Claude).
+- **Curated Expert Workflows:** Provides exact, battle-tested prompt sequences for 9 different architectures (SaaS MVP, Chrome Extension, Discord Bot, etc.).
+- **Educational:** It doesn't just write code; it teaches the user how to orchestrate AI-assisted development step-by-step.
+- **Resilient & Stateful:** Remembers where you are in the build process without accessing your source code.
+
 ## What Is build-with-ai?
 
 `build-with-ai` is an interactive CLI orchestrator that acts as your **personal software architect**. It breaks software development down into disciplined, sequential engineering phases and generates context-aware, copy-ready prompts for each stage.

@@ -1,32 +1,15 @@
-## Summary of Changes
-
-A concise description of the problem being solved or the feature/template being added.
+## Summary
+A concise description of the problem being solved or the feature being added.
 
 ## Type of Change
+- [ ] Bug fix (non-breaking change fixing an issue)
+- [ ] New feature (non-breaking change adding functionality)
+- [ ] Documentation update (README, CONTRIBUTING, comments)
+- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
 
-- [ ] 🐛 Bug fix (non-breaking change fixing an issue)
-- [ ] ✨ New feature (non-breaking change adding functionality)
-- [ ] 📋 New template (added a new workflow template in `templates/*.json`)
-- [ ] 📝 Documentation update (README, CONTRIBUTING, comments)
-- [ ] 🧪 Tests (added or updated unit/e2e tests)
-- [ ] ⚡ Performance improvement / refactor
+## Motivation & Context
+Why is this change required? What problem does it solve? If it fixes an open issue, link it here (e.g. Fixes #123).
 
-## Testing & Verification
-
-Describe how you tested these changes:
-1. Ran `npm test` (Unit & Integration tests)
-2. Ran `npm run test:e2e` (End-to-End simulation)
-3. Manual testing steps:
-   ```bash
-   # Commands tested
-   ```
-
-## Checklist
-
-- [ ] My code follows the style guidelines of this project
-- [ ] I have performed a self-review of my own code
-- [ ] I have commented my code where necessary, particularly in hard-to-understand areas
-- [ ] I have updated relevant documentation / README if applicable
-- [ ] All existing and new tests pass locally (`npm test`)
-- [ ] No temporary files or secrets were accidentally committed
-
+## Testing Performed
+- [ ] I have run the test suite locally.
+- [ ] I have added tests that prove my fix is effective or that my feature works.
