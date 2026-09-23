@@ -69,6 +69,32 @@ async function runIsolatedClipboardFallback(moduleSource) {
 }
 
 async function runTests() {
+  const invalidStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-export-state-'));
+  try {
+    fs.mkdirSync(getStorageDir(invalidStateDir));
+    const statePath = path.join(getStorageDir(invalidStateDir), 'state.json');
+    const readmePath = path.join(invalidStateDir, 'README.md');
+    fs.writeFileSync(statePath, '{ invalid JSON', 'utf8');
+    fs.writeFileSync(readmePath, 'Existing documentation', 'utf8');
+    for (const args of [[], ['--dry-run'], ['--out-dir', 'new-output']]) {
+      const result = require('child_process').spawnSync(process.execPath, [
+        path.join(__dirname, '..', 'bin', 'cli.js'), 'export', ...args
+      ], { cwd: invalidStateDir, encoding: 'utf8', timeout: 10000 });
+      assert.ifError(result.error);
+      assert.strictEqual(result.status, 1, 'Unreadable state must fail export');
+      assert(result.stderr.includes('restore valid JSON from a backup'), 'Keep the recovery guidance');
+      assert(!result.stderr.includes('TypeError'), 'Do not crash after reporting unreadable state');
+      assert(!result.stdout.includes('Documentation exported successfully'));
+      assert.strictEqual(fs.readFileSync(readmePath, 'utf8'), 'Existing documentation');
+      assert.strictEqual(fs.readFileSync(statePath, 'utf8'), '{ invalid JSON');
+      assert(!fs.existsSync(path.join(invalidStateDir, 'new-output')));
+      assert(!fs.existsSync(path.join(invalidStateDir, 'BUILD_LOG.md')));
+      assert(!fs.existsSync(path.join(getStorageDir(invalidStateDir), 'CONTEXT.md')));
+    }
+  } finally {
+    fs.rmSync(invalidStateDir, { recursive: true, force: true });
+  }
+
   const historyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-history-order-'));
   try {
     assert.deepStrictEqual(getAllHistory(historyDir), []);
