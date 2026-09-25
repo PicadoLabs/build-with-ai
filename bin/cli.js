@@ -627,7 +627,7 @@ program
       logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
       process.exit(1);
     }
-    runExport(process.cwd(), options);
+    if (runExport(process.cwd(), options) === false) process.exitCode = 1;
   });
 
 // ─────────────────────────────────────────────────
@@ -841,7 +841,7 @@ program.action(async () => {
       }
       console.log();
     } else if (nextAction === 'export') {
-      runExport();
+      if (runExport() === false) process.exitCode = 1;
     }
   } else {
     console.log(pc.yellow('No active project found in this directory.'));
