@@ -1,0 +1,152 @@
+{
+  "type": "fastapi-backend",
+  "title": "Production FastAPI Backend",
+  "description": "End-to-end workflow for designing, building, testing, containerizing, and deploying a production-grade Python backend using FastAPI, Pydantic v2, async SQLAlchemy 2.0, and modern Python tooling.",
+  "steps": [
+    {
+      "id": "step-01-api-domain",
+      "phase": "Discovery",
+      "title": "API Domain, Resources & Requirements",
+      "goal": "Define the backend domain, API consumers, core resources, and non-negotiable V1 capabilities.",
+      "requires": ["project.name", "project.idea", "project.experienceLevel"],
+      "writes": ["decisions.apiResources", "decisions.apiConsumers", "decisions.apiRequirements"],
+      "expectedOutput": "Defined API resources, consumer types, core use cases, and V1 functional requirements.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": [],
+      "prompt": "I am building a FastAPI backend called \"{{project.name}}\".\nThe project concept is: {{project.idea}}.\nMy experience level is {{project.experienceLevel}}.\n\nAct as a Senior Backend Architect and define the API domain:\n1. Identify the core resources/entities the API needs to manage.\n2. Identify API consumers such as web clients, mobile clients, internal services, or third-party integrations.\n3. Define the primary V1 use cases and non-negotiable capabilities.\n4. Identify important relationships between resources.\n5. Identify important edge cases, consistency requirements, and expected request volume.\n6. Keep the scope appropriate for a production-ready first version rather than adding unnecessary features."
+    },
+    {
+      "id": "step-02-fastapi-architecture",
+      "phase": "Architecture",
+      "title": "FastAPI Application Architecture",
+      "goal": "Design a maintainable FastAPI application structure and establish boundaries between API, business logic, persistence, and infrastructure.",
+      "requires": ["decisions.apiResources", "decisions.apiRequirements"],
+      "writes": ["decisions.architecture"],
+      "expectedOutput": "FastAPI project architecture, module boundaries, request flow, configuration strategy, and dependency structure.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": ["app/", "app/main.py"],
+      "prompt": "Design the application architecture for \"{{project.name}}\" using FastAPI.\nThe core resources are: {{decisions.apiResources}}.\nThe core requirements are: {{decisions.apiRequirements}}.\n\nDefine:\n1. A production-oriented project structure using routers, schemas, models, services, repositories or data-access modules where justified, database configuration, and core configuration.\n2. The responsibility of each major module.\n3. The request lifecycle from HTTP request through validation, authentication, business logic, persistence, and response serialization.\n4. FastAPI dependency injection boundaries.\n5. Configuration management using environment variables and typed settings.\n6. Whether a repository layer is justified for this project's complexity. Avoid adding abstraction without a concrete reason.\n7. How the architecture should remain testable and easy to extend."
+    },
+    {
+      "id": "step-03-database-models",
+      "phase": "Database",
+      "title": "Async SQLAlchemy 2.0 Data Models",
+      "goal": "Design relational database models, relationships, constraints, indexes, and async database access using SQLAlchemy 2.0.",
+      "requires": ["decisions.apiResources", "decisions.architecture"],
+      "writes": ["decisions.dataModels"],
+      "expectedOutput": "SQLAlchemy 2.0 model definitions, relationships, constraints, indexes, and async session strategy.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": ["app/db/", "app/models/"],
+      "prompt": "Design the database layer for \"{{project.name}}\" using async SQLAlchemy 2.0.\nThe API resources are: {{decisions.apiResources}}.\nThe application architecture is: {{decisions.architecture}}.\n\nDefine:\n1. SQLAlchemy 2.0 models for the required entities.\n2. Primary keys, foreign keys, uniqueness constraints, nullable fields, defaults, and appropriate data types.\n3. Relationships and cascade behavior where appropriate.\n4. Indexes for common lookup, filtering, ordering, and foreign-key access patterns.\n5. Async SQLAlchemy engine and AsyncSession strategy.\n6. Transaction boundaries and rollback behavior.\n7. Database connection pooling considerations for production.\n8. Avoid storing derived data unless there is a clear consistency or performance reason."
+    },
+    {
+      "id": "step-04-database-migrations",
+      "phase": "Database",
+      "title": "Alembic Migration Strategy",
+      "goal": "Define safe, repeatable database schema migrations using Alembic and SQLAlchemy metadata.",
+      "requires": ["decisions.dataModels"],
+      "writes": ["decisions.migrationStrategy"],
+      "expectedOutput": "Alembic configuration, migration workflow, initial migration strategy, and production migration procedure.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": ["alembic.ini", "alembic/", "alembic/env.py"],
+      "prompt": "Design the Alembic migration strategy for \"{{project.name}}\" based on these SQLAlchemy data models: {{decisions.dataModels}}.\n\nDefine:\n1. Alembic project configuration and how SQLAlchemy metadata is connected to Alembic.\n2. Initial migration creation and application workflow.\n3. How developers generate, review, test, and apply migrations.\n4. How async database configuration should work with Alembic.\n5. Safe handling of destructive schema changes.\n6. How migrations should run during production deployment without creating unsafe concurrent migration behavior.\n7. Rollback or recovery considerations when a migration fails."
+    },
+    {
+      "id": "step-05-api-contracts",
+      "phase": "API Design",
+      "title": "Pydantic v2 Schemas & OpenAPI Contracts",
+      "goal": "Define request, response, validation, pagination, and error contracts using Pydantic v2 and FastAPI OpenAPI generation.",
+      "requires": ["decisions.apiResources", "decisions.dataModels"],
+      "writes": ["decisions.apiContracts"],
+      "expectedOutput": "Pydantic v2 request and response schemas, endpoint contracts, validation rules, pagination conventions, and error format.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": ["app/schemas/", "app/api/"],
+      "prompt": "Design the API contracts for \"{{project.name}}\" using Pydantic v2.\nThe API resources are: {{decisions.apiResources}}.\nThe database models are: {{decisions.dataModels}}.\n\nDefine:\n1. Create, update, read, and list schemas where appropriate.\n2. Pydantic v2 field validation, constraints, optionality, and serialization behavior.\n3. Response models that do not expose internal database fields accidentally.\n4. Pagination, filtering, sorting, and search conventions for collection endpoints.\n5. Standard success and error response contracts.\n6. HTTP status codes for successful and failed operations.\n7. FastAPI path, query, body, and response parameter definitions.\n8. The resulting OpenAPI contract should be predictable and consistent across the service."
+    },
+    {
+      "id": "step-06-auth-rbac",
+      "phase": "Security",
+      "title": "JWT Authentication & Role-Based Access Control",
+      "goal": "Design secure user authentication and authorization using password hashing, JWTs, and FastAPI dependencies.",
+      "requires": ["decisions.apiContracts", "decisions.dataModels"],
+      "writes": ["decisions.authImplementation"],
+      "expectedOutput": "Authentication flow, password hashing strategy, JWT design, protected dependencies, roles, and authorization rules.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": ["app/auth/", "app/api/dependencies.py"],
+      "prompt": "Design authentication and authorization for \"{{project.name}}\".\nThe API contracts are: {{decisions.apiContracts}}.\nThe database models are: {{decisions.dataModels}}.\n\nDefine:\n1. User registration and login flow.\n2. Secure password hashing using an appropriate password hashing algorithm such as Argon2 or bcrypt.\n3. JWT access-token structure, signing algorithm, expiration, and secret/key management.\n4. Whether refresh tokens are needed and how they should be stored and revoked.\n5. FastAPI dependencies for resolving the authenticated user.\n6. Role-based or permission-based authorization rules for protected resources.\n7. How unauthorized and forbidden requests should be represented.\n8. Security considerations including token leakage, password handling, secret rotation, and brute-force protection."
+    },
+    {
+      "id": "step-07-service-layer",
+      "phase": "Business Logic",
+      "title": "Service Layer & CRUD Operations",
+      "goal": "Implement domain behavior, CRUD operations, transactions, validation, and clean separation between HTTP routing and business logic.",
+      "requires": ["decisions.apiContracts", "decisions.dataModels", "decisions.authImplementation"],
+      "writes": ["decisions.serviceLayer"],
+      "expectedOutput": "Service-layer design, CRUD operations, transaction boundaries, domain validation, and error-handling strategy.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": ["app/services/", "app/api/routes/"],
+      "prompt": "Design the service layer for \"{{project.name}}\".\nThe API contracts are: {{decisions.apiContracts}}.\nThe database models are: {{decisions.dataModels}}.\nThe authentication and authorization design is: {{decisions.authImplementation}}.\n\nDefine:\n1. Service functions for the major business operations.\n2. Which logic belongs in FastAPI routers versus service functions.\n3. Database access and transaction boundaries for each important operation.\n4. Ownership and authorization checks before modifying protected resources.\n5. Handling of not-found, conflict, validation, and business-rule errors.\n6. Idempotency requirements for operations where retries are possible.\n7. How the service layer should remain independently testable."
+    },
+    {
+      "id": "step-08-background-jobs",
+      "phase": "Async Processing",
+      "title": "Background Tasks & Worker Queues",
+      "goal": "Identify long-running or asynchronous workloads and choose an appropriate background execution strategy.",
+      "requires": ["decisions.serviceLayer", "decisions.apiRequirements"],
+      "writes": ["decisions.backgroundJobs"],
+      "expectedOutput": "Background workload inventory, selected execution mechanism, retry strategy, queue design, and failure handling.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": ["app/workers/", "app/tasks/"],
+      "prompt": "Design background processing for \"{{project.name}}\".\nThe service layer is: {{decisions.serviceLayer}}.\nThe API requirements are: {{decisions.apiRequirements}}.\n\nDetermine:\n1. Which operations should remain synchronous and which should execute asynchronously.\n2. Whether FastAPI BackgroundTasks is sufficient or a durable worker system such as ARQ with Redis or Celery with Redis is justified.\n3. Queue and task boundaries.\n4. Retry behavior, backoff, timeout, and maximum retry attempts.\n5. Idempotency requirements so retries do not duplicate side effects.\n6. Failure handling and dead-letter or recovery considerations where appropriate.\n7. How task status should be observed or exposed to API consumers."
+    },
+    {
+      "id": "step-09-dependency-observability",
+      "phase": "Infrastructure",
+      "title": "Dependency Injection, Middleware & Structured Logging",
+      "goal": "Design FastAPI dependencies, middleware, exception handling, request tracing, and structured application logging.",
+      "requires": ["decisions.architecture", "decisions.authImplementation", "decisions.backgroundJobs"],
+      "writes": ["decisions.infrastructure"],
+      "expectedOutput": "Dependency injection strategy, middleware configuration, exception handlers, request IDs, structured logging, and health checks.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": ["app/core/", "app/middleware/", "app/api/dependencies.py"],
+      "prompt": "Design the infrastructure layer for \"{{project.name}}\".\nThe architecture is: {{decisions.architecture}}.\nAuthentication is: {{decisions.authImplementation}}.\nBackground processing is: {{decisions.backgroundJobs}}.\n\nDefine:\n1. FastAPI dependency providers for configuration, database sessions, authenticated users, and other shared resources.\n2. Middleware for request IDs, access logging, CORS, and other justified cross-cutting concerns.\n3. Global exception handlers with consistent error responses.\n4. Structured logging fields such as request_id, user_id when available, route, status_code, and latency.\n5. Liveness and readiness health checks.\n6. How sensitive data such as passwords, tokens, and secrets must be excluded from logs.\n7. Graceful startup and shutdown behavior for database pools and worker resources."
+    },
+    {
+      "id": "step-10-testing",
+      "phase": "Testing",
+      "title": "Pytest & HTTPX Testing Strategy",
+      "goal": "Create a reliable automated test suite covering business logic, database behavior, API contracts, authentication, and failure cases.",
+      "requires": ["decisions.apiContracts", "decisions.serviceLayer", "decisions.authImplementation", "decisions.infrastructure"],
+      "writes": ["decisions.testStrategy"],
+      "expectedOutput": "Unit and integration test strategy using pytest, async fixtures, HTTPX, isolated database state, and dependency overrides.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": ["tests/", "tests/conftest.py"],
+      "prompt": "Design the testing strategy for \"{{project.name}}\".\nThe API contracts are: {{decisions.apiContracts}}.\nThe service layer is: {{decisions.serviceLayer}}.\nAuthentication is: {{decisions.authImplementation}}.\nInfrastructure is: {{decisions.infrastructure}}.\n\nDefine:\n1. Unit tests for business logic and important validation rules.\n2. Async integration tests using pytest, pytest-asyncio where appropriate, and HTTPX AsyncClient.\n3. FastAPI dependency overrides for test isolation.\n4. A disposable or isolated test database strategy.\n5. Tests for authentication, authorization, CRUD operations, validation errors, not-found responses, conflicts, and unexpected failures.\n6. Transaction rollback and database cleanup between tests.\n7. How to test background jobs without making the API test suite dependent on a live worker.\n8. Minimum CI commands and coverage expectations."
+    },
+    {
+      "id": "step-11-containerization",
+      "phase": "Deployment",
+      "title": "Docker & Local Production Parity",
+      "goal": "Package the FastAPI service into a secure, reproducible container and provide a useful local multi-service environment.",
+      "requires": ["decisions.architecture", "decisions.testStrategy", "decisions.infrastructure"],
+      "writes": ["decisions.containerization"],
+      "expectedOutput": "Production Dockerfile, Docker Compose configuration, environment configuration, health checks, and container security practices.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": ["Dockerfile", "docker-compose.yml", ".dockerignore", ".env.example"],
+      "prompt": "Design containerization for \"{{project.name}}\".\nThe architecture is: {{decisions.architecture}}.\nThe test strategy is: {{decisions.testStrategy}}.\nInfrastructure requirements are: {{decisions.infrastructure}}.\n\nDefine:\n1. A multi-stage Dockerfile suitable for a production FastAPI service.\n2. Dependency installation and caching strategy using the selected Python package manager.\n3. A non-root runtime user and minimal runtime image where practical.\n4. Uvicorn process configuration and when multiple workers are appropriate.\n5. Docker Compose services needed for local development, such as PostgreSQL and Redis if required.\n6. Health checks and startup dependencies.\n7. Environment variable handling without embedding secrets in images.\n8. .dockerignore contents and basic container hardening."
+    },
+    {
+      "id": "step-12-production-deployment",
+      "phase": "Deployment",
+      "title": "Production Deployment & Operations",
+      "goal": "Define how the tested containerized FastAPI service is deployed, migrated, monitored, and operated in production.",
+      "requires": ["decisions.containerization", "decisions.testStrategy", "decisions.infrastructure", "decisions.migrationStrategy"],
+      "writes": ["decisions.deployment"],
+      "expectedOutput": "Production deployment plan, runtime configuration, database migration procedure, health monitoring, scaling strategy, and CI/CD workflow.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": [".github/workflows/", "Dockerfile", "deploy/"],
+      "prompt": "Design the production deployment for \"{{project.name}}\".\nContainerization is: {{decisions.containerization}}.\nTesting is: {{decisions.testStrategy}}.\nInfrastructure is: {{decisions.infrastructure}}.\nDatabase migration strategy is: {{decisions.migrationStrategy}}.\n\nDefine:\n1. A suitable deployment model for the project's expected scale, such as Google Cloud Run, Fly.io, AWS ECS/Fargate, or another appropriate platform.\n2. Production PostgreSQL and Redis requirements where applicable.\n3. How environment variables and secrets are supplied securely.\n4. How Alembic migrations are executed safely during deployment.\n5. Uvicorn/Gunicorn process configuration and worker scaling considerations.\n6. Liveness and readiness probes.\n7. Logging, metrics, error monitoring, and basic alerting requirements.\n8. Horizontal scaling considerations including database connection limits.\n9. CI/CD stages: lint, test, build, migrate, deploy, and verify.\n10. Rollback strategy for both application releases and failed migrations.\n11. Graceful shutdown and zero-downtime considerations where supported by the deployment platform."
+    }
+  ]
+}
+
