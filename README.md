@@ -101,7 +101,7 @@ npm install -g build-with-ai
 - **Arbitrary Step Navigation** — Jump to any step using `build-with-ai jump <stepNumber>` or step back with `build-with-ai back`.
 - **Custom Template Loading** — Load community templates from local JSON files or remote HTTPS URLs (`--template <path-or-url>`).
 - **Deterministic Documentation Export** — Generates complete `README.md`, `BUILD_LOG.md`, and `CONTEXT.md` documentation when finished.
-- **6 Built-in Production Templates** — Full-Stack Web App, REST API, SaaS MVP, Mobile App (Expo), Chrome Extension, and AI Agent & RAG Pipeline.
+- **10 Built-in Production Templates** — Full-Stack Web App, Modern SaaS MVP, Python FastAPI Backend, AI Orchestration & Multi-Agent, AI Agent & RAG, Mobile App (React Native/Expo), Flutter Mobile, Backend REST API, Chrome Extension, and Discord Bot.
 - **100% Local & Private** — No telemetry, no network calls to proprietary AI APIs, and zero vendor lock-in.
 
 ---
