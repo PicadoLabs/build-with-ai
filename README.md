@@ -23,7 +23,7 @@ Developers want to build complex applications using AI (like ChatGPT or Claude w
 
 ## Why it's Unique (The "Edge")
 - **Zero API / Zero Cost:** Operates purely via the terminal and clipboard. The user pastes the generated prompts into their existing free/paid AI web interface (ChatGPT/Claude).
-- **Curated Expert Workflows:** Provides exact, battle-tested prompt sequences for 9 different architectures (SaaS MVP, Chrome Extension, Discord Bot, etc.).
+- **Curated Expert Workflows:** Provides exact, battle-tested prompt sequences for 10 different architectures (SaaS MVP, Chrome Extension, Discord Bot, etc.).
 - **Educational:** It doesn't just write code; it teaches the user how to orchestrate AI-assisted development step-by-step.
 - **Resilient & Stateful:** Remembers where you are in the build process without accessing your source code.
 
@@ -386,6 +386,7 @@ npx build-with-ai next --json | node -e "let d='';process.stdin.on('data',c=>d+=
 | `ai-agent` | **AI Agent & RAG Pipeline** | 14 | LangChain / LlamaIndex, Vector DB, FastAPI / Express |
 | `ai-orchestration` | **AI Orchestration & Multi-Agent System** | 14 | LangGraph / CrewAI, AutoGen, Vector DB, Telemetry |
 | `discord-bot` | **Discord Bot Workflow** | 12 | Node.js, discord.js v14, Slash Commands, SQLite/PostgreSQL |
+| `fastapi-backend` | **Python FastAPI & Microservices** | 12 | Python 3.11+, FastAPI, Pydantic v2, Async SQLAlchemy 2.0, Alembic, Pytest |
 ---
 
 ## Architecture & Storage Design
