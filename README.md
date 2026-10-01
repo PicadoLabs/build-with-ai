@@ -3,10 +3,6 @@
 > A zero-API, local-first CLI that guides you step-by-step through building complete software projects with any AI — by generating the right prompt at every stage.
 
 <div align="center">
-  <img src="demo.gif" alt="build-with-ai Terminal Demo" width="800" />
-</div>
-
-<div align="center">
 
 [![CI](https://github.com/PicadoLabs/build-with-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/PicadoLabs/build-with-ai/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/build-with-ai.svg?style=flat&color=3b82f6)](https://www.npmjs.com/package/build-with-ai)
@@ -17,6 +13,10 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 [Quickstart](#quickstart) • [How It Works](#how-it-works) • [Architecture](#architecture) • [User Story Walkthrough](#user-story-riya-builds-a-saas-app) • [Commands](#commands-reference) • [Templates](#available-templates) • [Contributing](CONTRIBUTING.md)
+
+<br />
+<img src="demo.gif" alt="build-with-ai Terminal Demo" width="800" />
+<br />
 
 </div>
 
