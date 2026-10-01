@@ -6,6 +6,7 @@
 
 [![CI](https://github.com/PicadoLabs/build-with-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/PicadoLabs/build-with-ai/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/build-with-ai.svg?style=flat&color=3b82f6)](https://www.npmjs.com/package/build-with-ai)
+[![npm downloads](https://img.shields.io/npm/dt/build-with-ai.svg?style=flat&color=10b981&label=downloads)](https://www.npmjs.com/package/build-with-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Node >= 16](https://img.shields.io/badge/node-%3E%3D16.0.0-f59e0b.svg)](https://nodejs.org)
 [![Zero API Keys](https://img.shields.io/badge/AI_API-None_(100%25_Local)-8b5cf6.svg)](README.md)
@@ -101,7 +102,7 @@ npm install -g build-with-ai
 - **Arbitrary Step Navigation** — Jump to any step using `build-with-ai jump <stepNumber>` or step back with `build-with-ai back`.
 - **Custom Template Loading** — Load community templates from local JSON files or remote HTTPS URLs (`--template <path-or-url>`).
 - **Deterministic Documentation Export** — Generates complete `README.md`, `BUILD_LOG.md`, and `CONTEXT.md` documentation when finished.
-- **10 Built-in Production Templates** — Full-Stack Web App, Modern SaaS MVP, Python FastAPI Backend, AI Orchestration & Multi-Agent, AI Agent & RAG, Mobile App (React Native/Expo), Flutter Mobile, Backend REST API, Chrome Extension, and Discord Bot.
+- **6 Built-in Production Templates** — Full-Stack Web App, REST API, SaaS MVP, Mobile App (Expo), Chrome Extension, and AI Agent & RAG Pipeline.
 - **100% Local & Private** — No telemetry, no network calls to proprietary AI APIs, and zero vendor lock-in.
 
 ---
