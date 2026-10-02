@@ -620,6 +620,27 @@ async function executeFullE2ETest() {
     const rnp = runSync(['resume'], emptyDir);
     assert(rnp.stdout.includes('No active project found'), 'resume no project');
 
+    // Resume with completed workflow
+    const completeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bwa-complete-'));
+    fs.mkdirSync(path.join(completeDir, '.buildwithai'));
+    fs.writeFileSync(path.join(completeDir, '.buildwithai', 'state.json'), JSON.stringify({
+      projectName: 'DoneApp',
+      templateId: 'web-app',
+      currentStep: 999,
+      totalSteps: 23,
+      completedSteps: new Array(23).fill(0).map((_, i) => i + 1)
+    }), 'utf8');
+    fs.writeFileSync(path.join(completeDir, '.buildwithai', 'context.json'), '{}', 'utf8');
+    const rComplete = runSync(['resume'], completeDir);
+    assert(rComplete.stdout.includes('All steps completed! You can run') || rComplete.stdout.includes('Project complete: Run'), 'resume completed workflow');
+
+    // Resume with corrupted state
+    const corruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bwa-corrupt-'));
+    fs.mkdirSync(path.join(corruptDir, '.buildwithai'));
+    fs.writeFileSync(path.join(corruptDir, '.buildwithai', 'state.json'), '{ invalid_json: ', 'utf8');
+    const rCorrupt = runSync(['resume'], corruptDir);
+    assert(rCorrupt.stderr.includes('Failed to parse') || rCorrupt.stderr.includes('Failed to load project state') || rCorrupt.stdout.includes('Failed to load project state'), 'resume corrupt state');
+
     // Export with no project
     const enp = runSync(['export'], emptyDir);
     assert(enp.stdout.includes('No project found') || enp.stderr.includes('No project found'), 'export no project');
@@ -646,6 +667,8 @@ async function executeFullE2ETest() {
 
     safeRmDir(emptyDir);
     safeRmDir(backDir);
+    safeRmDir(completeDir);
+    safeRmDir(corruptDir);
 
     report['Error handling'] = 'PASS';
     console.log('   ✔ All error and edge cases failed gracefully with clear messages and 0 unhandled crashes.\n');
