@@ -28,7 +28,7 @@ const program = new Command();
 program
   .name('build-with-ai')
   .description('A minimal, zero-API CLI guiding developers through building software projects with AI.')
-  .version('1.2.0');
+  .version(require('../package.json').version);
 
 program
   .command('history [stepNumber]')
