@@ -1,15 +1,24 @@
 {
+  "id": "saas-mvp",
   "type": "saas-mvp",
   "title": "Modern SaaS MVP",
   "description": "End-to-end workflow for building and launching a subscription SaaS product with Next.js, Supabase, Stripe, and Resend.",
+  "stepCount": 15,
   "steps": [
     {
       "id": "step-01-discovery",
       "phase": "Discovery",
       "title": "Problem Discovery & SaaS Value Proposition",
       "goal": "Identify the target customer segment, define the core pain point, and craft a compelling SaaS value proposition.",
-      "requires": ["project.name", "project.idea"],
-      "writes": ["decisions.targetCustomer", "decisions.coreValueProp"],
+      "requires": [
+        "project.name",
+        "project.idea",
+        "project.experienceLevel"
+      ],
+      "writes": [
+        "decisions.targetCustomer",
+        "decisions.coreValueProp"
+      ],
       "expectedOutput": "Clear customer persona, 2-sentence value proposition, and 3 measurable success metrics.",
       "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
       "targetFiles": [],
@@ -20,8 +29,14 @@
       "phase": "Requirements",
       "title": "MVP Feature Scoping & Subscription Tiers",
       "goal": "Define the minimal feature set, free vs paid tiers, and explicit non-goals for V1 launch.",
-      "requires": ["decisions.coreValueProp"],
-      "writes": ["decisions.mvpFeatures", "decisions.pricingTiers"],
+      "requires": [
+        "decisions.coreValueProp",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.mvpFeatures",
+        "decisions.pricingTiers"
+      ],
       "expectedOutput": "3-5 must-have user stories, pricing tier breakdown (Free/Pro/Business), and explicit V1 non-goals.",
       "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
       "targetFiles": [],
@@ -32,11 +47,22 @@
       "phase": "Tech Stack",
       "title": "SaaS Technology Stack Selection",
       "goal": "Select a modern, scalable, and cost-efficient technology stack optimized for a solo founder or small team.",
-      "requires": ["project.experienceLevel", "decisions.mvpFeatures"],
-      "writes": ["decisions.frontendStack", "decisions.backendStack", "decisions.database", "decisions.authProvider"],
+      "requires": [
+        "project.experienceLevel",
+        "decisions.mvpFeatures",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.frontendStack",
+        "decisions.backendStack",
+        "decisions.database",
+        "decisions.authProvider"
+      ],
       "expectedOutput": "Selected stack: Next.js 14 App Router, Tailwind CSS, Shadcn/UI, Supabase, Stripe, Resend, Vercel.",
       "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
-      "targetFiles": ["package.json"],
+      "targetFiles": [
+        "package.json"
+      ],
       "prompt": "My experience level is {{project.experienceLevel}} and \"{{project.name}}\" needs these features:\n{{decisions.mvpFeatures}}\n\nRecommend the optimal SaaS tech stack:\n1. Frontend (framework, UI library, component system — e.g. Next.js 14 App Router + Tailwind + Shadcn/UI).\n2. Backend / API (e.g. Next.js Route Handlers or separate Express/Fastify service).\n3. Database & Auth (e.g. Supabase with PostgreSQL, Row Level Security, and OAuth providers).\n4. Payments (e.g. Stripe Subscriptions with webhooks).\n5. Email (e.g. Resend with React Email templates).\n6. Analytics (e.g. PostHog for self-serve, or Plausible).\n7. Deployment (e.g. Vercel for frontend, Supabase for backend).\nJustify each choice for a {{project.experienceLevel}} team."
     },
     {
@@ -44,11 +70,20 @@
       "phase": "Database",
       "title": "Supabase Database Schema & Row Level Security",
       "goal": "Design tables for users, subscriptions, and core domain entities with proper RLS policies.",
-      "requires": ["decisions.database", "decisions.mvpFeatures", "decisions.pricingTiers"],
-      "writes": ["decisions.dataModels"],
+      "requires": [
+        "decisions.database",
+        "decisions.mvpFeatures",
+        "decisions.pricingTiers",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.dataModels"
+      ],
       "expectedOutput": "SQL schema with RLS policies, user profiles table, subscription tracking, and seed data.",
       "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
-      "targetFiles": ["supabase/migrations/001_initial.sql"],
+      "targetFiles": [
+        "supabase/migrations/001_initial.sql"
+      ],
       "prompt": "Design the Supabase PostgreSQL schema for \"{{project.name}}\" to support:\n{{decisions.mvpFeatures}}\n\nWith pricing tiers: {{decisions.pricingTiers}}\n\n1. Create tables: users/profiles (extending Supabase auth.users), subscriptions, and core domain entities.\n2. Write Row Level Security (RLS) policies to restrict data access per authenticated user.\n3. Add a trigger to auto-create user profiles on auth.users insert.\n4. Provide seed SQL for 3 realistic test accounts across different plan tiers.\n5. Add indexes on foreign keys and high-query columns."
     },
     {
@@ -56,11 +91,20 @@
       "phase": "API",
       "title": "Next.js API Routes & Server Actions",
       "goal": "Define server-side Route Handlers and Server Actions for core features and integrations.",
-      "requires": ["decisions.dataModels", "decisions.frontendStack"],
-      "writes": ["decisions.apiEndpoints"],
+      "requires": [
+        "decisions.dataModels",
+        "decisions.frontendStack",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.apiEndpoints"
+      ],
       "expectedOutput": "API routes table, Server Actions for mutations, and Supabase client helper patterns.",
       "recommendedAI": "GPT-4o / Claude 3.5 Sonnet",
-      "targetFiles": ["app/api/", "app/actions/"],
+      "targetFiles": [
+        "app/api/",
+        "app/actions/"
+      ],
       "prompt": "Design the API layer for \"{{project.name}}\" using {{decisions.frontendStack}}:\n1. List all Next.js Route Handlers (Method, Path, Auth Required, Request Body, Response Shape).\n2. Define Server Actions for form mutations (e.g. profile updates, workspace creation).\n3. Create the Supabase server-side client helper (for Server Components and Route Handlers).\n4. Create the Supabase browser client helper (for Client Components).\n5. Define middleware.ts for session refresh and route protection."
     },
     {
@@ -68,11 +112,22 @@
       "phase": "Authentication",
       "title": "Supabase Auth & Session Management",
       "goal": "Implement signup, login, OAuth, email magic link, and protected route patterns.",
-      "requires": ["decisions.authProvider", "decisions.frontendStack"],
-      "writes": ["decisions.authImplementation"],
+      "requires": [
+        "decisions.authProvider",
+        "decisions.frontendStack",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.authImplementation"
+      ],
       "expectedOutput": "Auth pages (login, signup, callback), session middleware, and protected route wrapper.",
       "recommendedAI": "Claude 3.5 Sonnet",
-      "targetFiles": ["app/auth/", "app/login/page.tsx", "middleware.ts", "utils/supabase/"],
+      "targetFiles": [
+        "app/auth/",
+        "app/login/page.tsx",
+        "middleware.ts",
+        "utils/supabase/"
+      ],
       "prompt": "Implement authentication for \"{{project.name}}\" using {{decisions.authProvider}} with {{decisions.frontendStack}}:\n1. Login and signup pages with email/password and Google OAuth.\n2. Email magic link option.\n3. Auth callback route handler at /auth/callback.\n4. Middleware to protect /dashboard and other private routes.\n5. Session refresh pattern in layout.tsx Server Component.\n6. User profile creation on first login using a database trigger."
     },
     {
@@ -80,11 +135,22 @@
       "phase": "Payments",
       "title": "Stripe Subscription Integration",
       "goal": "Set up Stripe Checkout, customer portal, webhook handling, and subscription status syncing.",
-      "requires": ["decisions.pricingTiers", "decisions.dataModels"],
-      "writes": ["decisions.stripeIntegration"],
+      "requires": [
+        "decisions.pricingTiers",
+        "decisions.dataModels",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.stripeIntegration"
+      ],
       "expectedOutput": "Stripe Checkout session creation, webhook handler, customer portal, and plan enforcement helpers.",
       "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
-      "targetFiles": ["app/api/stripe/checkout/route.ts", "app/api/stripe/webhook/route.ts", "app/api/stripe/portal/route.ts", "lib/stripe.ts"],
+      "targetFiles": [
+        "app/api/stripe/checkout/route.ts",
+        "app/api/stripe/webhook/route.ts",
+        "app/api/stripe/portal/route.ts",
+        "lib/stripe.ts"
+      ],
       "prompt": "Implement Stripe Subscriptions for \"{{project.name}}\" with tiers: {{decisions.pricingTiers}}:\n1. `lib/stripe.ts` — Stripe SDK client initialization with TypeScript types.\n2. `/api/stripe/checkout` — Creates a Checkout Session for a selected price ID.\n3. `/api/stripe/webhook` — Handles: checkout.session.completed, customer.subscription.updated, customer.subscription.deleted.\n4. `/api/stripe/portal` — Creates a Customer Portal session for subscription management.\n5. Database sync: After each webhook event, sync subscription status and plan to the subscriptions table.\n6. `lib/subscription.ts` — Helper to check user plan tier and enforce feature gates."
     },
     {
@@ -92,11 +158,20 @@
       "phase": "Email",
       "title": "Transactional Emails with Resend & React Email",
       "goal": "Set up Resend for transactional emails with branded React Email templates.",
-      "requires": ["decisions.dataModels"],
-      "writes": ["decisions.emailSetup"],
+      "requires": [
+        "decisions.dataModels",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.emailSetup"
+      ],
       "expectedOutput": "React Email templates for welcome, subscription confirmed, and trial expiring emails with Resend send functions.",
       "recommendedAI": "GPT-4o",
-      "targetFiles": ["emails/", "lib/email.ts", "app/api/emails/"],
+      "targetFiles": [
+        "emails/",
+        "lib/email.ts",
+        "app/api/emails/"
+      ],
       "prompt": "Set up transactional email infrastructure for \"{{project.name}}\" using Resend and React Email:\n1. `lib/email.ts` — Resend client initialization and a generic `sendEmail(to, subject, template)` helper.\n2. Create 3 React Email templates:\n   a. WelcomeEmail — sent on first signup, explains next steps.\n   b. SubscriptionConfirmedEmail — sent after Stripe checkout.session.completed.\n   c. TrialExpiringEmail — sent 3 days before free trial ends.\n3. Show how to trigger these from Server Actions and webhook handlers.\n4. Provide `.env.example` entries for RESEND_API_KEY and FROM_EMAIL."
     },
     {
@@ -104,11 +179,23 @@
       "phase": "Frontend",
       "title": "Dashboard Layout & Core Feature UI",
       "goal": "Build the authenticated dashboard shell, sidebar navigation, and the primary feature screens.",
-      "requires": ["decisions.frontendStack", "decisions.mvpFeatures", "decisions.authImplementation"],
-      "writes": ["decisions.uiComponents"],
+      "requires": [
+        "decisions.frontendStack",
+        "decisions.mvpFeatures",
+        "decisions.authImplementation",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.uiComponents"
+      ],
       "expectedOutput": "App layout with sidebar, responsive dashboard shell, and core feature page components.",
       "recommendedAI": "Claude 3.5 Sonnet / v0.dev",
-      "targetFiles": ["app/(dashboard)/layout.tsx", "app/(dashboard)/dashboard/page.tsx", "components/layout/sidebar.tsx", "components/layout/header.tsx"],
+      "targetFiles": [
+        "app/(dashboard)/layout.tsx",
+        "app/(dashboard)/dashboard/page.tsx",
+        "components/layout/sidebar.tsx",
+        "components/layout/header.tsx"
+      ],
       "prompt": "Build the authenticated dashboard for \"{{project.name}}\" using {{decisions.frontendStack}}:\n1. Authenticated layout at `app/(dashboard)/layout.tsx` with session guard (redirect to /login if not authenticated).\n2. Sidebar navigation component with links to main feature areas, user avatar, and settings.\n3. Responsive top header with page title, breadcrumbs, and action buttons.\n4. Dashboard home page showing key metrics cards and quick-action buttons.\n5. Implement dark mode toggle using Shadcn/UI and next-themes.\n6. Create a `components/ui/` directory with any additional shared components."
     },
     {
@@ -116,11 +203,21 @@
       "phase": "Frontend",
       "title": "Settings Page & Billing Management UI",
       "goal": "Build the user settings and billing pages integrated with Stripe Customer Portal.",
-      "requires": ["decisions.stripeIntegration", "decisions.authImplementation"],
-      "writes": ["decisions.settingsUi"],
+      "requires": [
+        "decisions.stripeIntegration",
+        "decisions.authImplementation",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.settingsUi"
+      ],
       "expectedOutput": "Settings page with profile editor, billing section showing plan details and upgrade/manage buttons.",
       "recommendedAI": "Claude 3.5 Sonnet",
-      "targetFiles": ["app/(dashboard)/settings/page.tsx", "app/(dashboard)/billing/page.tsx", "components/billing/"],
+      "targetFiles": [
+        "app/(dashboard)/settings/page.tsx",
+        "app/(dashboard)/billing/page.tsx",
+        "components/billing/"
+      ],
       "prompt": "Build the Settings and Billing pages for \"{{project.name}}\":\n1. `/settings` — Profile settings form (name, avatar upload to Supabase Storage, email display, password change).\n2. `/billing` — Current plan display, next billing date, usage metrics, and upgrade CTA.\n3. \"Manage Subscription\" button that calls `/api/stripe/portal` and redirects user to Stripe Customer Portal.\n4. Plan upgrade flow: clicking on a higher tier triggers `/api/stripe/checkout` for plan upgrade.\n5. Show a banner when the user is on a free trial with days remaining."
     },
     {
@@ -128,11 +225,19 @@
       "phase": "Analytics",
       "title": "Analytics & User Behavior Tracking",
       "goal": "Integrate PostHog or Plausible for product analytics and funnel tracking.",
-      "requires": ["decisions.frontendStack"],
-      "writes": ["decisions.analyticsSetup"],
+      "requires": [
+        "decisions.frontendStack",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.analyticsSetup"
+      ],
       "expectedOutput": "Analytics provider setup, pageview tracking, custom conversion event instrumentation.",
       "recommendedAI": "GPT-4o",
-      "targetFiles": ["lib/analytics.ts", "app/providers.tsx"],
+      "targetFiles": [
+        "lib/analytics.ts",
+        "app/providers.tsx"
+      ],
       "prompt": "Add product analytics to \"{{project.name}}\" using PostHog:\n1. Initialize PostHog in `app/providers.tsx` as a Client Component wrapper.\n2. Track key conversion events: `user_signed_up`, `trial_started`, `checkout_completed`, `feature_used`, `export_generated`.\n3. Identify users after login with `posthog.identify(userId, { email, plan })`.\n4. Create a `lib/analytics.ts` helper with typed event names.\n5. Add a feature flag example for A/B testing a new onboarding variant."
     },
     {
@@ -140,11 +245,21 @@
       "phase": "Testing",
       "title": "Testing Strategy: Unit, Integration & E2E",
       "goal": "Write automated tests covering auth flows, payment webhooks, and critical feature paths.",
-      "requires": ["decisions.apiEndpoints", "decisions.stripeIntegration"],
-      "writes": ["decisions.testSuite"],
+      "requires": [
+        "decisions.apiEndpoints",
+        "decisions.stripeIntegration",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.testSuite"
+      ],
       "expectedOutput": "Vitest unit tests, Playwright E2E tests for auth and checkout, and CI/CD pipeline config.",
       "recommendedAI": "Claude 3.5 Sonnet",
-      "targetFiles": ["tests/", "playwright.config.ts", ".github/workflows/ci.yml"],
+      "targetFiles": [
+        "tests/",
+        "playwright.config.ts",
+        ".github/workflows/ci.yml"
+      ],
       "prompt": "Write tests for \"{{project.name}}\":\n1. Vitest unit tests for `lib/subscription.ts` plan enforcement and `lib/email.ts` template rendering.\n2. Playwright E2E tests:\n   a. Sign up flow → email confirmation → dashboard redirect.\n   b. Upgrade to Pro → Stripe Checkout → webhook → plan updated in DB.\n   c. Access a gated feature as free user → see upgrade prompt.\n3. Stripe webhook test using `stripe trigger checkout.session.completed`.\n4. GitHub Actions CI workflow running tests on every pull request."
     },
     {
@@ -152,11 +267,20 @@
       "phase": "Security",
       "title": "Security Hardening & Data Protection",
       "goal": "Audit and harden auth, RLS policies, API rate limiting, environment secrets, and GDPR basics.",
-      "requires": ["decisions.authImplementation", "decisions.dataModels"],
-      "writes": ["decisions.securityReview"],
+      "requires": [
+        "decisions.authImplementation",
+        "decisions.dataModels",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.securityReview"
+      ],
       "expectedOutput": "Security checklist: RLS verification, rate limiting, secret rotation plan, and GDPR data handling.",
       "recommendedAI": "Claude 3.5 Sonnet",
-      "targetFiles": ["middleware.ts", "app/api/"],
+      "targetFiles": [
+        "middleware.ts",
+        "app/api/"
+      ],
       "prompt": "Perform a security audit for \"{{project.name}}\":\n1. Verify all Supabase RLS policies correctly restrict data access to the owning user.\n2. Add request rate limiting to auth endpoints (`/api/auth/`) using Upstash Redis or Vercel middleware.\n3. Audit environment variables — identify which can be public (NEXT_PUBLIC_) vs must remain server-only.\n4. Implement Stripe webhook signature verification (reject requests without valid Stripe-Signature header).\n5. List the minimum GDPR compliance steps: data export endpoint, account deletion, privacy policy requirements."
     },
     {
@@ -164,11 +288,21 @@
       "phase": "Deployment",
       "title": "Production Deployment to Vercel & Supabase",
       "goal": "Configure production environment, set all environment variables, run migrations, and go live.",
-      "requires": ["decisions.frontendStack", "decisions.database", "decisions.stripeIntegration"],
-      "writes": ["decisions.productionUrl"],
+      "requires": [
+        "decisions.frontendStack",
+        "decisions.database",
+        "decisions.stripeIntegration",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.productionUrl"
+      ],
       "expectedOutput": "Step-by-step deployment guide, environment variable checklist, and post-launch monitoring setup.",
       "recommendedAI": "Claude 3.5 Sonnet",
-      "targetFiles": ["vercel.json", ".env.production"],
+      "targetFiles": [
+        "vercel.json",
+        ".env.production"
+      ],
       "prompt": "Deploy \"{{project.name}}\" to production:\n1. Vercel deployment steps (connect GitHub repo, configure environment variables for NEXT_PUBLIC_SUPABASE_URL, STRIPE_SECRET_KEY, RESEND_API_KEY, etc.).\n2. Supabase production setup: enable email confirmations, configure OAuth redirect URLs for the production domain, run migrations.\n3. Stripe production config: activate Stripe live keys, configure webhook endpoint for the production URL, test a live payment.\n4. Configure Vercel Cron Jobs if needed (e.g., daily trial expiry email job).\n5. Set up Vercel Analytics and Sentry or LogSnag for error monitoring.\n6. Pre-launch checklist: custom domain, SSL, favicon, og:image, sitemap.xml, robots.txt."
     },
     {
@@ -176,13 +310,21 @@
       "phase": "Documentation",
       "title": "Internal Docs, Runbook & Launch Checklist",
       "goal": "Document the system architecture, environment setup, and create a launch-day checklist.",
-      "requires": ["decisions.productionUrl"],
-      "writes": ["decisions.documentation"],
+      "requires": [
+        "decisions.productionUrl",
+        "project.name"
+      ],
+      "writes": [
+        "decisions.documentation"
+      ],
       "expectedOutput": "Architecture diagram, runbook for common ops tasks, and a 30-point launch checklist.",
       "recommendedAI": "Claude 3.5 Sonnet",
-      "targetFiles": ["docs/ARCHITECTURE.md", "docs/RUNBOOK.md", "LAUNCH_CHECKLIST.md"],
+      "targetFiles": [
+        "docs/ARCHITECTURE.md",
+        "docs/RUNBOOK.md",
+        "LAUNCH_CHECKLIST.md"
+      ],
       "prompt": "Create operational documentation for \"{{project.name}}\" (live at {{decisions.productionUrl}}):\n1. `docs/ARCHITECTURE.md` — System architecture overview (Vercel, Supabase, Stripe, Resend, PostHog) with data flow narrative.\n2. `docs/RUNBOOK.md` — Step-by-step guides for: adding a new pricing tier, migrating the database, rotating API keys, debugging a failed Stripe webhook.\n3. `LAUNCH_CHECKLIST.md` — 30-point pre-launch checklist covering: product, UX, security, payments, legal, marketing, and monitoring."
     }
   ]
 }
-
