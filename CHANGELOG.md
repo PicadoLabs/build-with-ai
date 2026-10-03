@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-10-03
+
+### Added
+- **Electron Desktop App Template:** Added full 12-step desktop application workflow template (`templates/electron-app.json`) covering IPC, Vite, React, and electron-builder.
+- **Automated Template Schema & DAG Validator:** Zero-dependency template and Context DAG validation engine (`lib/validator.js`) ensuring contract safety.
+- **CI/CD Static Analysis Pipeline:** Added ESLint and Prettier automated checks across Node 18, 20, and 22 in GitHub Actions (`.github/workflows/ci.yml`).
+- **Automated GitHub Release Drafting:** Integrated tag-based automated release and changelog drafting workflow (`.github/workflows/release.yml`).
+- **Custom Template Documentation:** Added explicit usage examples for local and remote JSON templates via `--template <path|url>`.
+
+### Fixed
+- **Hero Templates Variable Contract:** Audited and resolved missing global variable prerequisites across all built-in hero templates.
+- **Resume Edge Cases:** Hardened `build-with-ai resume` handling for completed workflows and unreadable state files.
+- **Remote Loading Reliability:** Ensured network timeout and stream error recovery on remote template fetching.
+
+---
+
 ## [1.2.0] - 2026-09-19
 
 ### Added

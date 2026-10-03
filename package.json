@@ -1,6 +1,6 @@
 {
   "name": "build-with-ai",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "A minimal, zero-API CLI that guides developers through building software with any AI by giving them the right prompt at each step.",
   "bin": {
     "build-with-ai": "bin/cli.js"
