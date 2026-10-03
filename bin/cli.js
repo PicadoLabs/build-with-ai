@@ -39,16 +39,21 @@ program
       logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
       process.exit(1);
     }
-    if (stepNumber !== undefined && (!/^\d+$/.test(stepNumber) || !Number.isSafeInteger(Number(stepNumber)) || Number(stepNumber) < 1)) {
+    if (
+      stepNumber !== undefined &&
+      (!/^\d+$/.test(stepNumber) || !Number.isSafeInteger(Number(stepNumber)) || Number(stepNumber) < 1)
+    ) {
       logger.error('Step number must be a positive integer. Example: `npx build-with-ai history 2`.');
       process.exit(1);
     }
     const history = getAllHistory();
     if (options.json) {
       if (stepNumber !== undefined) {
-        const entry = history.find(item => item.step === Number(stepNumber));
+        const entry = history.find((item) => item.step === Number(stepNumber));
         if (!entry) {
-          logger.error(`No recorded history for step ${stepNumber}. Run \`npx build-with-ai history\` to list available logs.`);
+          logger.error(
+            `No recorded history for step ${stepNumber}. Run \`npx build-with-ai history\` to list available logs.`
+          );
           process.exit(1);
         }
         console.log(JSON.stringify(entry, null, 2));
@@ -58,9 +63,11 @@ program
       return;
     }
     if (stepNumber !== undefined) {
-      const entry = history.find(item => item.step === Number(stepNumber));
+      const entry = history.find((item) => item.step === Number(stepNumber));
       if (!entry) {
-        logger.error(`No recorded history for step ${stepNumber}. Run \`npx build-with-ai history\` to list available logs.`);
+        logger.error(
+          `No recorded history for step ${stepNumber}. Run \`npx build-with-ai history\` to list available logs.`
+        );
         process.exit(1);
       }
       process.stdout.write(entry.content);
@@ -107,7 +114,9 @@ program
     const template = getTemplate(state.templateId);
 
     if (!template) {
-      logger.error(`Template "${state.templateId}" not found. Run \`npx build-with-ai list\` to view available templates.`);
+      logger.error(
+        `Template "${state.templateId}" not found. Run \`npx build-with-ai list\` to view available templates.`
+      );
       process.exit(1);
     }
 
@@ -122,7 +131,11 @@ program
       console.log();
       logger.success(pc.bold('All steps in this template are complete!'));
       console.log();
-      console.log(pc.cyan('Run ') + pc.bold(pc.green('npx build-with-ai export')) + pc.cyan(' to generate your README, BUILD_LOG, and CONTEXT documentation.'));
+      console.log(
+        pc.cyan('Run ') +
+          pc.bold(pc.green('npx build-with-ai export')) +
+          pc.cyan(' to generate your README, BUILD_LOG, and CONTEXT documentation.')
+      );
       console.log();
       return;
     }
@@ -209,7 +222,9 @@ program
 
     if (currentStepNum > totalSteps) {
       logger.info('All steps have already been completed.');
-      console.log(pc.cyan('Run ') + pc.bold(pc.green('npx build-with-ai export')) + pc.cyan(' to generate documentation.'));
+      console.log(
+        pc.cyan('Run ') + pc.bold(pc.green('npx build-with-ai export')) + pc.cyan(' to generate documentation.')
+      );
       return;
     }
 
@@ -257,7 +272,10 @@ program
 
       if (stepWrites.length > 0) {
         for (const writeKey of stepWrites) {
-          const keyLabel = writeKey.replace(/^decisions\./, '').replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+          const keyLabel = writeKey
+            .replace(/^decisions\./, '')
+            .replace(/([A-Z])/g, ' $1')
+            .replace(/^./, (str) => str.toUpperCase());
           const { val } = await inquirer.prompt([
             {
               type: 'input',
@@ -293,7 +311,10 @@ program
       console.log();
       console.log(pc.bold('Expected outcomes for this step:'));
       for (const w of stepWrites) {
-        const label = w.replace(/^decisions\./, '').replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+        const label = w
+          .replace(/^decisions\./, '')
+          .replace(/([A-Z])/g, ' $1')
+          .replace(/^./, (str) => str.toUpperCase());
         console.log(`  ${pc.dim('•')} ${label}`);
       }
       console.log();
@@ -324,10 +345,16 @@ program
     console.log();
 
     if (state.currentStep <= totalSteps) {
-      console.log(pc.cyan('Next: Run ') + pc.bold(pc.green('npx build-with-ai next')) + pc.cyan(' to generate the next prompt.'));
+      console.log(
+        pc.cyan('Next: Run ') + pc.bold(pc.green('npx build-with-ai next')) + pc.cyan(' to generate the next prompt.')
+      );
     } else {
       console.log(pc.green('All workflow steps completed!'));
-      console.log(pc.cyan('Run ') + pc.bold(pc.green('npx build-with-ai export')) + pc.cyan(' to generate README.md and documentation.'));
+      console.log(
+        pc.cyan('Run ') +
+          pc.bold(pc.green('npx build-with-ai export')) +
+          pc.cyan(' to generate README.md and documentation.')
+      );
     }
     console.log();
   });
@@ -354,7 +381,7 @@ program
 
     const prev = current - 1;
     state.currentStep = prev;
-    state.completedSteps = (state.completedSteps || []).filter(s => s !== prev);
+    state.completedSteps = (state.completedSteps || []).filter((s) => s !== prev);
     saveState(state);
 
     console.log();
@@ -421,7 +448,9 @@ program
     console.log();
     logger.success(`Jumped to Step ${target}/${totalSteps}.`);
     console.log(pc.dim('History and context decisions are intact.'));
-    console.log(pc.cyan('Run ') + pc.bold(pc.green('npx build-with-ai next')) + pc.cyan(' to generate this step\'s prompt.'));
+    console.log(
+      pc.cyan('Run ') + pc.bold(pc.green('npx build-with-ai next')) + pc.cyan(" to generate this step's prompt.")
+    );
     console.log();
   });
 
@@ -527,7 +556,9 @@ program
     const totalSteps = template ? template.steps.length : state.totalSteps || 0;
     const currentStepNum = state.currentStep || 1;
     const completedList = state.completedSteps || [];
-    const completedSteps = new Set(completedList.filter(step => Number.isInteger(step) && step >= 1 && step <= totalSteps));
+    const completedSteps = new Set(
+      completedList.filter((step) => Number.isInteger(step) && step >= 1 && step <= totalSteps)
+    );
     const exportReady = totalSteps > 0 && completedSteps.size === totalSteps;
     const decisions = context.decisions || {};
 
@@ -593,7 +624,7 @@ program
     if (entries.length > 0) {
       console.log(pc.bold(pc.magenta('RECORDED DECISIONS:')));
       for (const [k, v] of entries) {
-        const label = k.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+        const label = k.replace(/([A-Z])/g, ' $1').replace(/^./, (str) => str.toUpperCase());
         const valStr = typeof v === 'object' ? JSON.stringify(v) : String(v);
         console.log(`  ${pc.dim('•')} ${pc.bold(label)}: ${valStr}`);
       }
@@ -640,13 +671,24 @@ program
   .option('--json', 'Print template summaries as a JSON array')
   .action((options) => {
     const query = (options.search || '').toLowerCase();
-    const templates = loadTemplates().filter(template =>
-      !query || [template.id, template.title, template.description].some(value => String(value).toLowerCase().includes(query))
+    const templates = loadTemplates().filter(
+      (template) =>
+        !query ||
+        [template.id, template.title, template.description].some((value) => String(value).toLowerCase().includes(query))
     );
     if (options.json) {
-      console.log(JSON.stringify(templates.map(({ id, title, description, stepCount }) => ({
-        id, title, description, stepCount
-      })), null, 2));
+      console.log(
+        JSON.stringify(
+          templates.map(({ id, title, description, stepCount }) => ({
+            id,
+            title,
+            description,
+            stepCount
+          })),
+          null,
+          2
+        )
+      );
       return;
     }
     console.log();
@@ -654,9 +696,11 @@ program
     console.log(pc.dim('─'.repeat(55)));
 
     if (templates.length === 0) {
-      console.log(pc.yellow(options.search
-        ? `No templates match "${options.search}".`
-        : 'No templates found in templates directory.'));
+      console.log(
+        pc.yellow(
+          options.search ? `No templates match "${options.search}".` : 'No templates found in templates directory.'
+        )
+      );
       return;
     }
 
@@ -815,7 +859,9 @@ program.action(async () => {
       state.currentStep = picked;
       saveState(state);
       logger.success(`Jumped to Step ${picked}/${totalSteps}.`);
-      console.log(pc.cyan('Run ') + pc.bold(pc.green('npx build-with-ai next')) + pc.cyan(' to generate this step\'s prompt.'));
+      console.log(
+        pc.cyan('Run ') + pc.bold(pc.green('npx build-with-ai next')) + pc.cyan(" to generate this step's prompt.")
+      );
       console.log();
     } else if (nextAction === 'resume') {
       runResume();
@@ -834,7 +880,7 @@ program.action(async () => {
         console.log();
         console.log(pc.bold(pc.magenta('RECORDED DECISIONS:')));
         for (const [k, v] of entries) {
-          const label = k.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+          const label = k.replace(/([A-Z])/g, ' $1').replace(/^./, (str) => str.toUpperCase());
           const valStr = typeof v === 'object' ? JSON.stringify(v) : String(v);
           console.log(`  ${pc.dim('•')} ${pc.bold(label)}: ${valStr}`);
         }

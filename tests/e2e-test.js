@@ -98,62 +98,90 @@ async function executeFullE2ETest() {
   console.log(`📂 Testing in isolated workspace: ${testDir}\n`);
 
   const report = {
-    'Init': 'FAIL',
-    'Next': 'FAIL',
+    Init: 'FAIL',
+    Next: 'FAIL',
     'Prompt resolution': 'FAIL',
-    'Clipboard': 'FAIL',
+    Clipboard: 'FAIL',
     'Done / Summary': 'FAIL',
     'Done / Full history': 'FAIL',
     'Context injection': 'FAIL',
     'Context key lookup': 'FAIL',
     'Missing requires': 'FAIL',
-    'Back': 'FAIL',
-    'Status': 'FAIL',
-    'Resume': 'FAIL',
-    'History': 'FAIL',
+    Back: 'FAIL',
+    Status: 'FAIL',
+    Resume: 'FAIL',
+    History: 'FAIL',
     'Export dry run': 'Fail',
-    'Export': 'FAIL',
-    'Reset': 'FAIL',
+    Export: 'FAIL',
+    Reset: 'FAIL',
     'Error handling': 'FAIL'
   };
 
   const issues = [];
 
   try {
-    assert.throws(() => execFileSync(process.execPath, [CLI_BIN, 'history'], {
-      cwd: testDir, encoding: 'utf8', stdio: 'pipe'
-    }), error => error.status === 1 && error.stderr.includes('No project found'));
+    assert.throws(
+      () =>
+        execFileSync(process.execPath, [CLI_BIN, 'history'], {
+          cwd: testDir,
+          encoding: 'utf8',
+          stdio: 'pipe'
+        }),
+      (error) => error.status === 1 && error.stderr.includes('No project found')
+    );
     // -------------------------------------------------------------
     // Template discovery works before project initialization.
-    const listOutput = (args) => execFileSync(process.execPath, [CLI_BIN, 'list', ...args], {
-      cwd: testDir, encoding: 'utf8', timeout: 10000
-    });
+    const listOutput = (args) =>
+      execFileSync(process.execPath, [CLI_BIN, 'list', ...args], {
+        cwd: testDir,
+        encoding: 'utf8',
+        timeout: 10000
+      });
     const listedTemplates = JSON.parse(listOutput(['--json']));
-    const expectedTemplates = require('../lib/promptEngine').loadTemplates().map(({ id, title, description, stepCount }) => ({ id, title, description, stepCount }));
-    assert.deepStrictEqual(listedTemplates, expectedTemplates, 'JSON listing contains only the public summary fields in template order');
+    const expectedTemplates = require('../lib/promptEngine')
+      .loadTemplates()
+      .map(({ id, title, description, stepCount }) => ({ id, title, description, stepCount }));
+    assert.deepStrictEqual(
+      listedTemplates,
+      expectedTemplates,
+      'JSON listing contains only the public summary fields in template order'
+    );
     for (const [query, expectedId] of [
       ['WEB-APP', 'web-app'],
       ['Full-Stack Web Application', 'web-app'],
       ['subscription', 'saas-mvp']
     ]) {
       const results = JSON.parse(listOutput(['--search', query, '--json']));
-      assert.deepStrictEqual(results.map(template => template.id), [expectedId], `Search should match ${query}`);
+      assert.deepStrictEqual(
+        results.map((template) => template.id),
+        [expectedId],
+        `Search should match ${query}`
+      );
     }
-    assert.deepStrictEqual(JSON.parse(listOutput(['-s', 'subscription', '--json'])).map(template => template.id), ['saas-mvp']);
+    assert.deepStrictEqual(
+      JSON.parse(listOutput(['-s', 'subscription', '--json'])).map((template) => template.id),
+      ['saas-mvp']
+    );
     const filteredText = listOutput(['--search', 'subscription']);
     assert(filteredText.includes('Modern SaaS MVP'), 'Text mode shows matching templates');
     assert(!filteredText.includes('Full-Stack Web Application'), 'Text mode excludes other templates');
     assert.deepStrictEqual(JSON.parse(listOutput(['--search', 'no-template-matches-xyz', '--json'])), []);
-    assert(listOutput(['--search', 'no-template-matches-xyz']).includes('No templates match'), 'Empty text searches have a clear message');
+    assert(
+      listOutput(['--search', 'no-template-matches-xyz']).includes('No templates match'),
+      'Empty text searches have a clear message'
+    );
     assert.deepStrictEqual(JSON.parse(listOutput(['--search', '', '--json'])), listedTemplates);
     report['Template list options'] = 'PASS';
     // Step 1: Fresh Start (no subcommand)
     // -------------------------------------------------------------
     console.log('🔹 1. Testing Fresh Start (no args in empty folder)...');
     const freshRes = await runInteractiveProcess([], testDir, [
-      (out) => out.includes('Would you like to initialize') ? 'n\r\n' : null
+      (out) => (out.includes('Would you like to initialize') ? 'n\r\n' : null)
     ]);
-    assert(freshRes.stdout.includes('No active project found in this directory'), 'Must detect uninitialized directory');
+    assert(
+      freshRes.stdout.includes('No active project found in this directory'),
+      'Must detect uninitialized directory'
+    );
     assert(freshRes.stdout.includes('build-with-ai init'), 'Must suggest init');
     console.log('   ✔ Successfully detected uninitialized directory and offered init.\n');
 
@@ -162,10 +190,10 @@ async function executeFullE2ETest() {
     // -------------------------------------------------------------
     console.log('🔹 2. Testing `build-with-ai init` (Expense Tracker)...');
     const initRes = await runInteractiveProcess(['init'], testDir, [
-      (out) => out.includes('Select project type') ? '\r\n' : null,
-      (out) => out.includes('experience level') ? '\r\n' : null,
-      (out) => out.includes('Project name') ? 'Expense Tracker\r\n' : null,
-      (out) => out.includes('One-line project idea') ? 'A web app to track daily expenses by category\r\n' : null
+      (out) => (out.includes('Select project type') ? '\r\n' : null),
+      (out) => (out.includes('experience level') ? '\r\n' : null),
+      (out) => (out.includes('Project name') ? 'Expense Tracker\r\n' : null),
+      (out) => (out.includes('One-line project idea') ? 'A web app to track daily expenses by category\r\n' : null)
     ]);
 
     assert(fs.existsSync(path.join(testDir, '.buildwithai')), '.buildwithai directory created');
@@ -186,7 +214,11 @@ async function executeFullE2ETest() {
     assert.strictEqual(ctxObj.project.idea, 'A web app to track daily expenses by category');
 
     report['Init'] = 'PASS';
-    assert(execFileSync(process.execPath, [CLI_BIN, 'history'], { cwd: testDir, encoding: 'utf8' }).includes('No recorded step history yet'));
+    assert(
+      execFileSync(process.execPath, [CLI_BIN, 'history'], { cwd: testDir, encoding: 'utf8' }).includes(
+        'No recorded step history yet'
+      )
+    );
     console.log('   ✔ Initialized state.json, context.json, and history/ with currentStep = 1.\n');
 
     // -------------------------------------------------------------
@@ -201,7 +233,10 @@ async function executeFullE2ETest() {
     assert(next1Res.stdout.includes('My experience level is Beginner'), 'Resolved project.experienceLevel');
     assert(!next1Res.stdout.includes('undefined'), 'No undefined in prompt');
     assert(!next1Res.stdout.includes('{{'), 'No unresolved placeholders');
-    assert(next1Res.stdout.includes('Prompt copied to clipboard ✅') || next1Res.stdout.includes('PROMPT FOR YOUR AI:'), 'Clipboard confirmed');
+    assert(
+      next1Res.stdout.includes('Prompt copied to clipboard ✅') || next1Res.stdout.includes('PROMPT FOR YOUR AI:'),
+      'Clipboard confirmed'
+    );
 
     report['Next'] = 'PASS';
     report['Prompt resolution'] = 'PASS';
@@ -228,7 +263,11 @@ async function executeFullE2ETest() {
         timeout: 10000,
         env: { ...process.env, BUILD_WITH_AI_NO_COPY: testCase.env }
       });
-      assert.strictEqual(output.includes('__CLIPBOARD_CALLED__'), testCase.copies, 'Clipboard invocation should respect the flag and environment');
+      assert.strictEqual(
+        output.includes('__CLIPBOARD_CALLED__'),
+        testCase.copies,
+        'Clipboard invocation should respect the flag and environment'
+      );
       assert(output.includes('Expense Tracker'), 'Prompt must still be generated');
       if (testCase.json) {
         assert.strictEqual(JSON.parse(output).step, 1, 'JSON output must remain parseable');
@@ -246,10 +285,13 @@ async function executeFullE2ETest() {
     // -------------------------------------------------------------
     console.log('🔹 4. Testing `build-with-ai done` (Summary / Decisions path)...');
     const done1Res = await runInteractiveProcess(['done'], testDir, [
-      (out) => out.includes('How would you like to record') ? '\r\n' : null,
-      (out) => out.includes('Target Audience') ? 'Students and freelance professionals\r\n' : null,
-      (out) => out.includes('Core Value Prop') ? 'Effortlessly track daily expenses and visualize category summaries\r\n' : null,
-      (out) => out.includes('Have these been decided') ? '\r\n' : null
+      (out) => (out.includes('How would you like to record') ? '\r\n' : null),
+      (out) => (out.includes('Target Audience') ? 'Students and freelance professionals\r\n' : null),
+      (out) =>
+        out.includes('Core Value Prop')
+          ? 'Effortlessly track daily expenses and visualize category summaries\r\n'
+          : null,
+      (out) => (out.includes('Have these been decided') ? '\r\n' : null)
     ]);
 
     const stateAfterStep1 = JSON.parse(fs.readFileSync(path.join(testDir, '.buildwithai', 'state.json'), 'utf8'));
@@ -258,7 +300,10 @@ async function executeFullE2ETest() {
 
     const ctxAfterStep1 = JSON.parse(fs.readFileSync(path.join(testDir, '.buildwithai', 'context.json'), 'utf8'));
     assert.strictEqual(ctxAfterStep1.decisions.targetAudience, 'Students and freelance professionals');
-    assert.strictEqual(ctxAfterStep1.decisions.coreValueProp, 'Effortlessly track daily expenses and visualize category summaries');
+    assert.strictEqual(
+      ctxAfterStep1.decisions.coreValueProp,
+      'Effortlessly track daily expenses and visualize category summaries'
+    );
 
     report['Done / Summary'] = 'PASS';
     console.log('   ✔ Advanced step, saved decisions to context.json without large AI text.\n');
@@ -269,15 +314,19 @@ async function executeFullE2ETest() {
     console.log('🔹 5. Testing `build-with-ai next` and `done` with Full History path (Step 2)...');
     const next2Res = runSync(['next'], testDir);
     assert(next2Res.stdout.includes('STEP 2/23 — MVP Feature Scoping & Non-Goals'), 'Step 2 header');
-    assert(next2Res.stdout.includes('Effortlessly track daily expenses and visualize category summaries'), 'Injected coreValueProp');
+    assert(
+      next2Res.stdout.includes('Effortlessly track daily expenses and visualize category summaries'),
+      'Injected coreValueProp'
+    );
 
-    const fullResponseMock = '### MVP Specification\n1. Add/edit expense\n2. Category breakdown charts\n3. Export to CSV';
+    const fullResponseMock =
+      '### MVP Specification\n1. Add/edit expense\n2. Category breakdown charts\n3. Export to CSV';
     const done2Res = await runInteractiveProcess(['done'], testDir, [
-      (out) => out.includes('How would you like to record') ? '\u001b[B\u001b[B\r\n' : null, // Select "Both"
-      (out) => out.includes('Paste or enter the AI response') ? `${fullResponseMock}\r\n` : null,
-      (out) => out.includes('Mvp Features') ? 'Add/edit expenses, category breakdown, CSV export\r\n' : null,
-      (out) => out.includes('Non Goals') ? 'Multi-currency conversion, crypto wallets\r\n' : null,
-      (out) => out.includes('Have these been decided') ? '\r\n' : null
+      (out) => (out.includes('How would you like to record') ? '\u001b[B\u001b[B\r\n' : null), // Select "Both"
+      (out) => (out.includes('Paste or enter the AI response') ? `${fullResponseMock}\r\n` : null),
+      (out) => (out.includes('Mvp Features') ? 'Add/edit expenses, category breakdown, CSV export\r\n' : null),
+      (out) => (out.includes('Non Goals') ? 'Multi-currency conversion, crypto wallets\r\n' : null),
+      (out) => (out.includes('Have these been decided') ? '\r\n' : null)
     ]);
 
     assert(fs.existsSync(path.join(testDir, '.buildwithai', 'history', 'step-02.md')), 'step-02.md created');
@@ -285,13 +334,19 @@ async function executeFullE2ETest() {
     assert(step2HistText.includes('### MVP Specification'), 'History contains full AI response');
 
     const ctxAfterStep2 = JSON.parse(fs.readFileSync(path.join(testDir, '.buildwithai', 'context.json'), 'utf8'));
-    const historyOutput = args => execFileSync(process.execPath, [CLI_BIN, 'history', ...args], {
-      cwd: testDir, encoding: 'utf8', timeout: 10000, stdio: 'pipe'
-    });
+    const historyOutput = (args) =>
+      execFileSync(process.execPath, [CLI_BIN, 'history', ...args], {
+        cwd: testDir,
+        encoding: 'utf8',
+        timeout: 10000,
+        stdio: 'pipe'
+      });
     const historyList = historyOutput([]);
     assert(historyList.includes('step-02.md'), 'History lists recorded filenames');
     assert(!historyList.includes('step-01.md'), 'Summary-only steps do not invent log files');
-    const step2ModifiedAt = fs.statSync(path.join(testDir, '.buildwithai', 'history', 'step-02.md')).mtime.toISOString();
+    const step2ModifiedAt = fs
+      .statSync(path.join(testDir, '.buildwithai', 'history', 'step-02.md'))
+      .mtime.toISOString();
     assert(historyList.includes(step2ModifiedAt), 'History lists modification timestamps');
     assert.strictEqual(historyOutput(['2']), step2HistText, 'History prints the complete saved markdown');
     const historyJson = JSON.parse(historyOutput(['--json']));
@@ -307,7 +362,10 @@ async function executeFullE2ETest() {
     assert(historyStepJson.content.includes('### MVP Specification'));
 
     for (const step of ['0', '-1', '1.5', '2abc', '../2', '9007199254740992', '999']) {
-      assert.throws(() => historyOutput(['--', step]), error => error.status === 1 && /positive integer|No recorded history/.test(error.stderr));
+      assert.throws(
+        () => historyOutput(['--', step]),
+        (error) => error.status === 1 && /positive integer|No recorded history/.test(error.stderr)
+      );
     }
     report['History'] = 'PASS';
     assert(!JSON.stringify(ctxAfterStep2).includes('### MVP Specification'), 'Full markdown NOT in context.json');
@@ -321,15 +379,18 @@ async function executeFullE2ETest() {
     // -------------------------------------------------------------
     console.log('🔹 6. Testing Context Injection in Step 3 and Step 4...');
     const next3Res = runSync(['next'], testDir);
-    assert(next3Res.stdout.includes('Add/edit expenses, category breakdown, CSV export'), 'Injected mvpFeatures in Step 3');
+    assert(
+      next3Res.stdout.includes('Add/edit expenses, category breakdown, CSV export'),
+      'Injected mvpFeatures in Step 3'
+    );
 
     // Complete Step 3
     await runInteractiveProcess(['done'], testDir, [
-      (out) => out.includes('How would you like to record') ? '\r\n' : null,
-      (out) => out.includes('Frontend Stack') ? 'React with Tailwind CSS\r\n' : null,
-      (out) => out.includes('Backend Stack') ? 'Node.js Express REST API\r\n' : null,
-      (out) => out.includes('Database') ? 'SQLite with Prisma ORM\r\n' : null,
-      (out) => out.includes('Have these been decided') ? '\r\n' : null
+      (out) => (out.includes('How would you like to record') ? '\r\n' : null),
+      (out) => (out.includes('Frontend Stack') ? 'React with Tailwind CSS\r\n' : null),
+      (out) => (out.includes('Backend Stack') ? 'Node.js Express REST API\r\n' : null),
+      (out) => (out.includes('Database') ? 'SQLite with Prisma ORM\r\n' : null),
+      (out) => (out.includes('Have these been decided') ? '\r\n' : null)
     ]);
 
     // Check Step 4
@@ -342,7 +403,7 @@ async function executeFullE2ETest() {
     report['Context injection'] = 'PASS';
     console.log('   ✔ Multi-step context injection verified across steps 1 -> 2 -> 3 -> 4.\n');
 
-        // -------------------------------------------------------------
+    // -------------------------------------------------------------
     // Step 6.5: Context Key Lookup Command
     // -------------------------------------------------------------
     console.log('🔹 6.5. Testing `build-with-ai context decisions.database`...');
@@ -352,7 +413,11 @@ async function executeFullE2ETest() {
     assert.strictEqual(contextExistingRes.code, 0, 'Should exit normally for existing key');
 
     const contextMissingRes = runSync(['context', 'decisions.nonExistentKey'], testDir);
-    assert(contextMissingRes.stdout.includes('No value found for key') || contextMissingRes.stderr.includes('No value found for key'), 'Should show clear warning for missing key');
+    assert(
+      contextMissingRes.stdout.includes('No value found for key') ||
+        contextMissingRes.stderr.includes('No value found for key'),
+      'Should show clear warning for missing key'
+    );
     assert.strictEqual(contextMissingRes.code, 0, 'Should exit normally for missing key too');
 
     report['Context key lookup'] = 'PASS';
@@ -370,15 +435,24 @@ async function executeFullE2ETest() {
     ];
     for (const [input, expected] of setCases) {
       execFileSync(process.execPath, [CLI_BIN, 'set', 'decisions.testValue', input], {
-        cwd: testDir, encoding: 'utf8', timeout: 10000
+        cwd: testDir,
+        encoding: 'utf8',
+        timeout: 10000
       });
       const savedContext = JSON.parse(fs.readFileSync(path.join(testDir, '.buildwithai', 'context.json'), 'utf8'));
-      assert.deepStrictEqual(savedContext.decisions.testValue, expected, `set should preserve the value type for ${input}`);
-      assert.strictEqual(savedContext.decisions.database, 'SQLite with Prisma ORM', 'Other decisions must remain unchanged');
+      assert.deepStrictEqual(
+        savedContext.decisions.testValue,
+        expected,
+        `set should preserve the value type for ${input}`
+      );
+      assert.strictEqual(
+        savedContext.decisions.database,
+        'SQLite with Prisma ORM',
+        'Other decisions must remain unchanged'
+      );
     }
     report['Set JSON values'] = 'PASS';
     console.log('   ✔ Context command correctly prints existing values and warns on missing keys.\n');
-
 
     // -------------------------------------------------------------
     // Step 7: Missing Required Context Warning
@@ -421,11 +495,11 @@ async function executeFullE2ETest() {
 
     // Re-advance to 4
     await runInteractiveProcess(['done'], testDir, [
-      (out) => out.includes('How would you like to record') ? '\r\n' : null,
-      (out) => out.includes('Frontend Stack') ? 'React with Tailwind CSS\r\n' : null,
-      (out) => out.includes('Backend Stack') ? 'Node.js Express REST API\r\n' : null,
-      (out) => out.includes('Database') ? 'SQLite with Prisma ORM\r\n' : null,
-      (out) => out.includes('Have these been decided') ? '\r\n' : null
+      (out) => (out.includes('How would you like to record') ? '\r\n' : null),
+      (out) => (out.includes('Frontend Stack') ? 'React with Tailwind CSS\r\n' : null),
+      (out) => (out.includes('Backend Stack') ? 'Node.js Express REST API\r\n' : null),
+      (out) => (out.includes('Database') ? 'SQLite with Prisma ORM\r\n' : null),
+      (out) => (out.includes('Have these been decided') ? '\r\n' : null)
     ]);
 
     report['Back'] = 'PASS';
@@ -462,12 +536,16 @@ async function executeFullE2ETest() {
       metricsState.startedAt = new Date(Date.now() - 85 * 60000).toISOString();
       metricsState.updatedAt = new Date(Date.now() - 5 * 60000).toISOString();
       fs.writeFileSync(metricsStatePath, JSON.stringify(metricsState));
-      fs.writeFileSync(metricsContextPath, JSON.stringify({ decisions: { auth: { enabled: false }, retries: 0, features: ['Export'] } }));
-      const metricsOutput = () => execFileSync(process.execPath, [CLI_BIN, 'status'], {
-        cwd: testDir,
-        encoding: 'utf8',
-        env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' }
-      });
+      fs.writeFileSync(
+        metricsContextPath,
+        JSON.stringify({ decisions: { auth: { enabled: false }, retries: 0, features: ['Export'] } })
+      );
+      const metricsOutput = () =>
+        execFileSync(process.execPath, [CLI_BIN, 'status'], {
+          cwd: testDir,
+          encoding: 'utf8',
+          env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' }
+        });
       const metrics = metricsOutput();
       assert(metrics.includes('Time Elapsed: 1 hr 25 mins'));
       assert(metrics.includes('Last Updated: 5 mins ago'));
@@ -482,7 +560,10 @@ async function executeFullE2ETest() {
       assert(legacy.includes('Export Readiness: Ready'));
       metricsState.completedSteps = Array(metricsState.totalSteps).fill(1);
       fs.writeFileSync(metricsStatePath, JSON.stringify(metricsState));
-      assert(metricsOutput().includes('Export Readiness: In progress'), 'Duplicate completed steps cannot imply readiness');
+      assert(
+        metricsOutput().includes('Export Readiness: In progress'),
+        'Duplicate completed steps cannot imply readiness'
+      );
     } finally {
       fs.writeFileSync(metricsStatePath, originalMetricsState);
       fs.writeFileSync(metricsContextPath, originalMetricsContext);
@@ -512,7 +593,10 @@ async function executeFullE2ETest() {
 
     assert(!fs.existsSync(path.join(testDir, 'README.md')), 'README.md should not exist before export');
     assert(!fs.existsSync(path.join(testDir, 'BUILD_LOG.md')), 'BUILD_LOG.md should not exist before export');
-    assert(!fs.existsSync(path.join(testDir, '.buildwithai', 'CONTEXT.md')), 'CONTEXT.md should not exist before export');
+    assert(
+      !fs.existsSync(path.join(testDir, '.buildwithai', 'CONTEXT.md')),
+      'CONTEXT.md should not exist before export'
+    );
 
     const dryRunRes = runSync(['export', '--dry-run'], testDir);
     assert(dryRunRes.stdout.includes('README.md'), 'Dry run lists README.md');
@@ -550,36 +634,62 @@ async function executeFullE2ETest() {
     const contextMdContent = fs.readFileSync(path.join(testDir, '.buildwithai', 'CONTEXT.md'), 'utf8');
     assert(contextMdContent.includes('Project Context & Architecture Decisions'), 'CONTEXT.md check');
 
-    const sourceFiles = ['README.md', 'BUILD_LOG.md', '.buildwithai/CONTEXT.md', '.buildwithai/state.json', '.buildwithai/context.json'];
-    const sourceContents = sourceFiles.map(file => fs.readFileSync(path.join(testDir, file), 'utf8'));
-    const withoutExportTimestamp = content => content.split('\n').filter(line => !line.startsWith('> Automatically generated from ')).join('\n');
+    const sourceFiles = [
+      'README.md',
+      'BUILD_LOG.md',
+      '.buildwithai/CONTEXT.md',
+      '.buildwithai/state.json',
+      '.buildwithai/context.json'
+    ];
+    const sourceContents = sourceFiles.map((file) => fs.readFileSync(path.join(testDir, file), 'utf8'));
+    const withoutExportTimestamp = (content) =>
+      content
+        .split('\n')
+        .filter((line) => !line.startsWith('> Automatically generated from '))
+        .join('\n');
     for (const [flag, target] of [
       ['--out-dir', 'docs/nested output'],
       ['-o', path.join(testDir, 'absolute output')]
     ]) {
       const outputDir = path.resolve(testDir, target);
-      const preview = () => execFileSync(process.execPath, [CLI_BIN, 'export', '--dry-run', flag, target], {
-        cwd: testDir, encoding: 'utf8'
-      });
+      const preview = () =>
+        execFileSync(process.execPath, [CLI_BIN, 'export', '--dry-run', flag, target], {
+          cwd: testDir,
+          encoding: 'utf8'
+        });
       const previewOutput = preview();
       for (const file of ['README.md', 'BUILD_LOG.md', '.buildwithai/CONTEXT.md']) {
-        assert(previewOutput.includes(path.relative(testDir, path.join(outputDir, file))), 'Dry run lists custom output paths');
+        assert(
+          previewOutput.includes(path.relative(testDir, path.join(outputDir, file))),
+          'Dry run lists custom output paths'
+        );
       }
       assert(!fs.existsSync(outputDir), 'Dry run does not create the output directory');
       execFileSync(process.execPath, [CLI_BIN, 'export', flag, target], { cwd: testDir });
       assert.strictEqual(fs.readFileSync(path.join(outputDir, 'README.md'), 'utf8'), readmeContent);
       assert(fs.readFileSync(path.join(outputDir, 'BUILD_LOG.md'), 'utf8').includes('### MVP Specification'));
-      assert.strictEqual(withoutExportTimestamp(fs.readFileSync(path.join(outputDir, '.buildwithai', 'CONTEXT.md'), 'utf8')), withoutExportTimestamp(contextMdContent));
+      assert.strictEqual(
+        withoutExportTimestamp(fs.readFileSync(path.join(outputDir, '.buildwithai', 'CONTEXT.md'), 'utf8')),
+        withoutExportTimestamp(contextMdContent)
+      );
       const exportedFiles = ['README.md', 'BUILD_LOG.md', '.buildwithai/CONTEXT.md'];
-      const beforePreview = exportedFiles.map(file => fs.readFileSync(path.join(outputDir, file), 'utf8'));
-      const beforeTimes = exportedFiles.map(file => fs.statSync(path.join(outputDir, file)).mtimeMs);
+      const beforePreview = exportedFiles.map((file) => fs.readFileSync(path.join(outputDir, file), 'utf8'));
+      const beforeTimes = exportedFiles.map((file) => fs.statSync(path.join(outputDir, file)).mtimeMs);
       preview();
       exportedFiles.forEach((file, index) => {
         assert.strictEqual(fs.readFileSync(path.join(outputDir, file), 'utf8'), beforePreview[index]);
-        assert.strictEqual(fs.statSync(path.join(outputDir, file)).mtimeMs, beforeTimes[index], 'Dry run does not rewrite existing output');
+        assert.strictEqual(
+          fs.statSync(path.join(outputDir, file)).mtimeMs,
+          beforeTimes[index],
+          'Dry run does not rewrite existing output'
+        );
       });
       sourceFiles.forEach((file, index) => {
-        assert.strictEqual(fs.readFileSync(path.join(testDir, file), 'utf8'), sourceContents[index], `${file} is unchanged`);
+        assert.strictEqual(
+          fs.readFileSync(path.join(testDir, file), 'utf8'),
+          sourceContents[index],
+          `${file} is unchanged`
+        );
       });
     }
 
@@ -591,9 +701,9 @@ async function executeFullE2ETest() {
     // -------------------------------------------------------------
     console.log('🔹 12. Testing `build-with-ai reset`...');
     fs.writeFileSync(path.join(testDir, 'server.js'), 'console.log("user app code");', 'utf8');
-    
+
     const resetRes = await runInteractiveProcess(['reset'], testDir, [
-      (out) => out.includes('Are you sure you want to reset') ? 'y\r\n' : null
+      (out) => (out.includes('Are you sure you want to reset') ? 'y\r\n' : null)
     ]);
 
     assert(!fs.existsSync(path.join(testDir, '.buildwithai')), '.buildwithai was removed');
@@ -623,23 +733,36 @@ async function executeFullE2ETest() {
     // Resume with completed workflow
     const completeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bwa-complete-'));
     fs.mkdirSync(path.join(completeDir, '.buildwithai'));
-    fs.writeFileSync(path.join(completeDir, '.buildwithai', 'state.json'), JSON.stringify({
-      projectName: 'DoneApp',
-      templateId: 'web-app',
-      currentStep: 999,
-      totalSteps: 23,
-      completedSteps: new Array(23).fill(0).map((_, i) => i + 1)
-    }), 'utf8');
+    fs.writeFileSync(
+      path.join(completeDir, '.buildwithai', 'state.json'),
+      JSON.stringify({
+        projectName: 'DoneApp',
+        templateId: 'web-app',
+        currentStep: 999,
+        totalSteps: 23,
+        completedSteps: new Array(23).fill(0).map((_, i) => i + 1)
+      }),
+      'utf8'
+    );
     fs.writeFileSync(path.join(completeDir, '.buildwithai', 'context.json'), '{}', 'utf8');
     const rComplete = runSync(['resume'], completeDir);
-    assert(rComplete.stdout.includes('All steps completed! You can run') || rComplete.stdout.includes('Project complete: Run'), 'resume completed workflow');
+    assert(
+      rComplete.stdout.includes('All steps completed! You can run') ||
+        rComplete.stdout.includes('Project complete: Run'),
+      'resume completed workflow'
+    );
 
     // Resume with corrupted state
     const corruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bwa-corrupt-'));
     fs.mkdirSync(path.join(corruptDir, '.buildwithai'));
     fs.writeFileSync(path.join(corruptDir, '.buildwithai', 'state.json'), '{ invalid_json: ', 'utf8');
     const rCorrupt = runSync(['resume'], corruptDir);
-    assert(rCorrupt.stderr.includes('Failed to parse') || rCorrupt.stderr.includes('Failed to load project state') || rCorrupt.stdout.includes('Failed to load project state'), 'resume corrupt state');
+    assert(
+      rCorrupt.stderr.includes('Failed to parse') ||
+        rCorrupt.stderr.includes('Failed to load project state') ||
+        rCorrupt.stdout.includes('Failed to load project state'),
+      'resume corrupt state'
+    );
 
     // Export with no project
     const enp = runSync(['export'], emptyDir);
@@ -648,10 +771,10 @@ async function executeFullE2ETest() {
     // Back on step 1
     const backDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bwa-back-err-'));
     await runInteractiveProcess(['init'], backDir, [
-      (out) => out.includes('Select project type') ? '\r\n' : null,
-      (out) => out.includes('experience level') ? '\r\n' : null,
-      (out) => out.includes('Project name') ? 'App\r\n' : null,
-      (out) => out.includes('One-line project idea') ? 'Idea\r\n' : null
+      (out) => (out.includes('Select project type') ? '\r\n' : null),
+      (out) => (out.includes('experience level') ? '\r\n' : null),
+      (out) => (out.includes('Project name') ? 'App\r\n' : null),
+      (out) => (out.includes('One-line project idea') ? 'Idea\r\n' : null)
     ]);
     const back1 = runSync(['back'], backDir);
     assert(back1.stdout.includes('Already at the first step'), 'back on step 1');
@@ -672,7 +795,6 @@ async function executeFullE2ETest() {
 
     report['Error handling'] = 'PASS';
     console.log('   ✔ All error and edge cases failed gracefully with clear messages and 0 unhandled crashes.\n');
-
   } catch (err) {
     console.error('❌ E2E Failure:', err);
     issues.push({
@@ -690,7 +812,7 @@ async function executeFullE2ETest() {
     console.log(`${k.padEnd(22)} ${v === 'PASS' ? '✅ PASS' : '❌ FAIL'}`);
   }
   console.log('===============================================================');
-  const allPass = issues.length === 0 && Object.values(report).every(v => v === 'PASS');
+  const allPass = issues.length === 0 && Object.values(report).every((v) => v === 'PASS');
   console.log(`OVERALL STATUS: ${allPass ? 'PASS' : 'FAIL'}`);
   console.log('===============================================================');
   if (!allPass) process.exitCode = 1;
