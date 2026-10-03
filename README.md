@@ -392,6 +392,7 @@ npx build-with-ai next --json | node -e "let d='';process.stdin.on('data',c=>d+=
 | `ai-orchestration` | **AI Orchestration & Multi-Agent System** | 14 | LangGraph / CrewAI, AutoGen, Vector DB, Telemetry |
 | `discord-bot` | **Discord Bot Workflow** | 12 | Node.js, discord.js v14, Slash Commands, SQLite/PostgreSQL |
 | `fastapi-backend` | **Python FastAPI & Microservices** | 12 | Python 3.11+, FastAPI, Pydantic v2, Async SQLAlchemy 2.0, Alembic, Pytest |
+| `electron-app` | **Electron Desktop App** | 12 | Electron, Vite, React, IPC, electron-builder |
 
 ### Custom & Remote Templates
 

@@ -1,0 +1,151 @@
+{
+  "type": "electron-app",
+  "title": "Electron Desktop App",
+  "description": "Step-by-step workflow for building a secure, cross-platform desktop application using Electron, Vite, and React with proper IPC and auto-updating.",
+  "steps": [
+    {
+      "id": "step-01-discovery",
+      "phase": "Discovery",
+      "title": "Desktop App Concept & Target Platforms",
+      "goal": "Define the core utility of the app and which OS platforms it targets.",
+      "requires": ["project.name", "project.idea"],
+      "writes": ["decisions.platforms", "decisions.coreUtility"],
+      "expectedOutput": "Target OS list (Mac/Win/Linux), core desktop utility, and main user workflow.",
+      "recommendedAI": "Claude 3.5 Sonnet / GPT-4o",
+      "targetFiles": [],
+      "prompt": "I am building an Electron Desktop App called \"{{project.name}}\".\nThe concept is: {{project.idea}}.\nMy experience level is {{project.experienceLevel}}.\n\n1. Define the core utility this app provides as a desktop application vs a web app.\n2. List the target platforms (e.g., Windows, macOS (Intel/Silicon), Linux).\n3. Detail the main user workflow from app launch to achieving the primary goal."
+    },
+    {
+      "id": "step-02-mvp-scope",
+      "phase": "Requirements",
+      "title": "MVP Scope & Window Management",
+      "goal": "Map out the UI windows, system tray interactions, and core MVP features.",
+      "requires": ["decisions.coreUtility", "decisions.platforms"],
+      "writes": ["decisions.windowModel", "decisions.mvpFeatures"],
+      "expectedOutput": "List of windows, tray behavior, and 3-5 core MVP features.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": [],
+      "prompt": "Scope the MVP for \"{{project.name}}\" targeting {{decisions.platforms}}:\n1. Define the window model (single main window, multiple utility windows, frameless window, system tray app).\n2. List 3-5 MVP features with clear user stories.\n3. Define the offline capabilities of the app.\n4. List 5 explicit V1 non-goals."
+    },
+    {
+      "id": "step-03-tech-stack",
+      "phase": "Tech Stack",
+      "title": "Build Tooling & Frontend Framework",
+      "goal": "Select the scaffolding tool (e.g., electron-vite), frontend framework, and local DB.",
+      "requires": ["project.experienceLevel", "decisions.mvpFeatures"],
+      "writes": ["decisions.framework", "decisions.buildTool", "decisions.database"],
+      "expectedOutput": "Chosen frontend framework, build tool, and local data persistence strategy.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": [],
+      "prompt": "Recommend the specific tech stack for our Electron app based on my experience level ({{project.experienceLevel}}):\n1. Frontend Framework (e.g., React, Vue, Svelte) and styling library.\n2. Build Tooling (e.g., electron-vite, Forge, electron-builder).\n3. Local Data Persistence (e.g., better-sqlite3, electron-store, lowdb).\n4. Justify each choice specifically for an Electron environment."
+    },
+    {
+      "id": "step-04-ipc-design",
+      "phase": "Architecture",
+      "title": "IPC (Inter-Process Communication) Security",
+      "goal": "Design the IPC bridge between the Main process and Renderer process.",
+      "requires": ["decisions.framework", "decisions.windowModel"],
+      "writes": ["decisions.ipcStrategy"],
+      "expectedOutput": "Context isolation strategy and list of exposed API methods.",
+      "recommendedAI": "Claude 3.5 Sonnet / o1-preview",
+      "targetFiles": [],
+      "prompt": "Design the IPC communication strategy for \"{{project.name}}\":\n1. Explain how Context Isolation will be enforced.\n2. Draft the API surface for the `preload.js` script (what methods will `window.api` expose?).\n3. Map out the main events and handlers needed for our MVP features (e.g., reading files, triggering notifications)."
+    },
+    {
+      "id": "step-05-init",
+      "phase": "Implementation Setup",
+      "title": "Project Scaffold & Dependencies",
+      "goal": "Initialize the project using electron-vite and install dependencies.",
+      "requires": ["decisions.framework", "decisions.buildTool"],
+      "writes": ["decisions.projectScaffold"],
+      "expectedOutput": "Terminal commands to scaffold the project and `package.json` updates.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": ["package.json", "electron.vite.config.js"],
+      "prompt": "Provide the exact terminal commands to scaffold a new Electron app using {{decisions.buildTool}} with {{decisions.framework}}.\n1. List the commands to create the app and install core dependencies.\n2. Provide the initial `electron.vite.config.js` or equivalent config file.\n3. List the scripts to add to `package.json` for dev, build, and package."
+    },
+    {
+      "id": "step-06-main-process",
+      "phase": "Core Development",
+      "title": "Main Process & Window Setup",
+      "goal": "Implement the main entry point and window lifecycle.",
+      "requires": ["decisions.windowModel", "decisions.projectScaffold"],
+      "writes": ["decisions.mainProcess"],
+      "expectedOutput": "Code for `src/main/index.js` and `src/preload/index.js`.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": ["src/main/index.js", "src/preload/index.js"],
+      "prompt": "Write the initial Main Process code for the app:\n1. Implement `src/main/index.js` to create the {{decisions.windowModel}}.\n2. Handle window lifecycle events (ready, window-all-closed, activate).\n3. Implement `src/preload/index.js` with the context isolation setup we designed earlier."
+    },
+    {
+      "id": "step-07-renderer",
+      "phase": "Core Development",
+      "title": "Renderer Setup & UI Layout",
+      "goal": "Set up the frontend application and main UI layout.",
+      "requires": ["decisions.framework", "decisions.mainProcess"],
+      "writes": ["decisions.rendererApp"],
+      "expectedOutput": "Code for the main frontend entry point and core layout component.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": ["src/renderer/index.html", "src/renderer/src/App.jsx"],
+      "prompt": "Write the initial Renderer Process code using {{decisions.framework}}:\n1. Provide the `src/renderer/index.html` structure.\n2. Write the root application component (e.g., `App.jsx` or equivalent) that includes the main navigation and layout.\n3. Demonstrate calling one IPC method from the UI (e.g., getting app version or pinging main)."
+    },
+    {
+      "id": "step-08-native-features",
+      "phase": "Core Development",
+      "title": "Native OS Integrations",
+      "goal": "Implement native features like notifications, file dialogs, or global shortcuts.",
+      "requires": ["decisions.ipcStrategy", "decisions.mainProcess"],
+      "writes": ["decisions.nativeIntegrations"],
+      "expectedOutput": "IPC handler implementations for native OS features.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": ["src/main/ipcHandlers.js"],
+      "prompt": "Implement the IPC handlers in the Main Process for our native integrations:\n1. Based on our IPC strategy ({{decisions.ipcStrategy}}), provide the code to handle native events (e.g., native file dialogs, system notifications, or global shortcuts).\n2. Show how these handlers are registered in `src/main/index.js`."
+    },
+    {
+      "id": "step-09-state",
+      "phase": "Core Development",
+      "title": "Local Data Persistence",
+      "goal": "Implement local storage using the chosen database or store.",
+      "requires": ["decisions.database", "decisions.ipcStrategy"],
+      "writes": ["decisions.persistence"],
+      "expectedOutput": "Store implementation and IPC exposure for data operations.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": ["src/main/store.js"],
+      "prompt": "Implement local data persistence using {{decisions.database}}:\n1. Write `src/main/store.js` to initialize the local database or store.\n2. Write the CRUD operations needed for the app's core state.\n3. Explain how the Renderer process requests data via IPC."
+    },
+    {
+      "id": "step-10-auto-updater",
+      "phase": "Production Readiness",
+      "title": "Auto-Updating Setup",
+      "goal": "Integrate electron-updater for seamless OTA updates.",
+      "requires": ["decisions.platforms", "decisions.mainProcess"],
+      "writes": ["decisions.updates"],
+      "expectedOutput": "Code for checking and downloading updates.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": ["src/main/updater.js"],
+      "prompt": "Set up auto-updating using `electron-updater` for {{decisions.platforms}}:\n1. Write `src/main/updater.js` to handle `checking-for-update`, `update-available`, and `update-downloaded` events.\n2. Show how to trigger the updater from the Main Process on app launch.\n3. Detail the GitHub/S3 publisher configuration needed."
+    },
+    {
+      "id": "step-11-security",
+      "phase": "Production Readiness",
+      "title": "Security Audit & Hardening",
+      "goal": "Ensure node integration is disabled and web preferences are secure.",
+      "requires": ["decisions.mainProcess", "decisions.ipcStrategy"],
+      "writes": ["decisions.securityAudit"],
+      "expectedOutput": "Checklist and code updates to harden Electron security.",
+      "recommendedAI": "Claude 3.5 Sonnet / o1-preview",
+      "targetFiles": ["src/main/index.js"],
+      "prompt": "Audit and harden the Electron configuration:\n1. Verify `nodeIntegration: false` and `contextIsolation: true`.\n2. Implement `webContents.setWindowOpenHandler` to securely handle external links.\n3. Implement a strict Content Security Policy (CSP) in `index.html` and HTTP headers.\n4. Ensure webSecurity is enabled."
+    },
+    {
+      "id": "step-12-packaging",
+      "phase": "Deployment",
+      "title": "Packaging & Distribution",
+      "goal": "Configure electron-builder to generate installers for target platforms.",
+      "requires": ["decisions.platforms", "decisions.updates"],
+      "writes": ["decisions.packaging"],
+      "expectedOutput": "Complete `electron-builder.yml` and release workflow.",
+      "recommendedAI": "Claude 3.5 Sonnet",
+      "targetFiles": ["electron-builder.yml", ".github/workflows/build.yml"],
+      "prompt": "Configure the packaging pipeline for \"{{project.name}}\" targeting {{decisions.platforms}}:\n1. Provide the complete `electron-builder.yml` configuration (including mac/win/linux targets, appId, icons).\n2. Write a GitHub Actions workflow (`.github/workflows/build.yml`) to automatically build and publish drafts to GitHub Releases on tag pushes."
+    }
+  ]
+}
