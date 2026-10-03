@@ -281,7 +281,7 @@ async function runTests() {
   assert.deepStrictEqual(unchanged, { name: 'project' });
   console.log('Context path edge cases passed.');
 
-  const remoteData = { type: 'remote-test', title: 'Remote test', steps: [{ id: 'first' }] };
+  const remoteData = { type: 'remote-test', title: 'Remote test', steps: [{ id: 'first', prompt: 'test prompt' }] };
   const responses = [
     { status: 200, body: JSON.stringify(remoteData), valid: true },
     { status: 201, body: JSON.stringify(remoteData), valid: true },
@@ -447,7 +447,7 @@ async function runTests() {
       res.end('{"title":');
       return;
     }
-    res.end(JSON.stringify({ title: 'Remote template', steps: [] }));
+    res.end(JSON.stringify({ title: 'Remote template', steps: [{ id: 'step-1', prompt: 'test prompt' }] }));
   });
   await new Promise((resolve) => remoteServer.listen(0, '127.0.0.1', resolve));
   let disconnectDeadline;
