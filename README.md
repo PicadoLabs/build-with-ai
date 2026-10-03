@@ -392,6 +392,25 @@ npx build-with-ai next --json | node -e "let d='';process.stdin.on('data',c=>d+=
 | `ai-orchestration` | **AI Orchestration & Multi-Agent System** | 14 | LangGraph / CrewAI, AutoGen, Vector DB, Telemetry |
 | `discord-bot` | **Discord Bot Workflow** | 12 | Node.js, discord.js v14, Slash Commands, SQLite/PostgreSQL |
 | `fastapi-backend` | **Python FastAPI & Microservices** | 12 | Python 3.11+, FastAPI, Pydantic v2, Async SQLAlchemy 2.0, Alembic, Pytest |
+
+### Custom & Remote Templates
+
+In addition to the built-in workflows, `build-with-ai` supports loading your own custom JSON templates. This is perfect for team-specific scaffolding, internal standards, or community workflows.
+
+**Loading a local template file:**
+```bash
+npx build-with-ai init --template ./my-custom-template.json
+```
+*(Relative paths are resolved from your current directory. Absolute paths are also supported.)*
+
+**Loading a remote template via URL:**
+```bash
+npx build-with-ai init --template https://raw.githubusercontent.com/username/repo/main/my-template.json
+```
+*(The CLI securely downloads the template from the HTTPS URL. Ensure the URL points to raw JSON.)*
+
+For detailed instructions on writing your own template files with placeholder schemas and context contracts, check out the [Template Authoring Guide](CONTRIBUTING.md).
+
 ---
 
 ## Architecture & Storage Design
