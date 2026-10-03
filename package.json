@@ -18,7 +18,11 @@
   "scripts": {
     "test": "node tests/test-flow.js",
     "test:e2e": "node tests/e2e-test.js",
-    "test:all": "node tests/test-flow.js && node tests/e2e-test.js"
+    "test:all": "node tests/test-flow.js && node tests/e2e-test.js",
+    "lint": "eslint \"{bin,lib,tests}/**/*.js\"",
+    "lint:fix": "eslint \"{bin,lib,tests}/**/*.js\" --fix",
+    "format": "prettier --write \"{bin,lib,tests}/**/*.js\"",
+    "format:check": "prettier --check \"{bin,lib,tests}/**/*.js\""
   },
   "repository": {
     "type": "git",
@@ -54,5 +58,11 @@
     "commander": "^12.1.0",
     "inquirer": "^8.2.6",
     "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.1",
+    "eslint-config-prettier": "^9.1.2",
+    "eslint-plugin-prettier": "^5.5.6",
+    "prettier": "^3.9.9"
   }
 }

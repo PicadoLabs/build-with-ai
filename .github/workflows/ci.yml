@@ -7,15 +7,30 @@ on:
     branches: [ "main" ]
 
 jobs:
-  test:
+  lint-and-test:
     runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x, 22.x]
+
     steps:
-    - uses: actions/checkout@v3
-    - name: Set up Node.js
-      uses: actions/setup-node@v3
+    - uses: actions/checkout@v4
+    
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
       with:
-        node-version: "18"
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        
     - name: Install dependencies
-      run: npm install
-    - name: Run Tests
-      run: npm test || npm run test:all || echo "No tests configured"
+      run: npm ci
+      
+    - name: Check Code Formatting
+      run: npm run format:check
+      
+    - name: Run ESLint
+      run: npm run lint
+      
+    - name: Run Unit Tests
+      run: npm test
