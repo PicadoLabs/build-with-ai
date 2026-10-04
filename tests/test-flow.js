@@ -323,7 +323,7 @@ async function runTests() {
     { status: 200, body: '{broken' }
   ];
   const server = http.createServer((req, res) => {
-    const response = responses[Number(req.url.slice(1).replace('.json', ''))];
+    const response = responses[Number(req.url.slice(1).split('?')[0].replace('.json', ''))];
     res.writeHead(response.status, { 'Content-Type': 'application/json', Connection: 'close' });
     res.end(response.body);
   });
@@ -348,6 +348,19 @@ async function runTests() {
           `HTTP ${response.status} with body ${JSON.stringify(response.body)} must fail to load`
         );
       }
+    }
+    // The template id comes from the URL path only; query strings and fragments must not leak into it.
+    for (const [suffix, expectedId] of [
+      ['0.json?raw=true', '0'],
+      ['0.json#section', '0'],
+      ['0.json?raw=true#section', '0'],
+      ['0.json?token=a/b.json', '0'],
+      ['', 'custom'],
+      ['?raw=true', 'custom']
+    ]) {
+      const result = await loadRemoteTemplate(`http://127.0.0.1:${server.address().port}/${suffix}`);
+      assert(result, `Remote template with URL suffix "${suffix}" must load`);
+      assert.strictEqual(result.id, expectedId, `URL suffix "${suffix}" must produce id "${expectedId}"`);
     }
     assert(getTemplate('web-app'), 'Local templates remain available after failed remote loads');
   } finally {
