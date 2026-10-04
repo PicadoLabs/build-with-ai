@@ -451,6 +451,20 @@ async function executeFullE2ETest() {
         'Other decisions must remain unchanged'
       );
     }
+    // A key the context cannot store is refused with an error, never reported as set
+    const contextFile = path.join(testDir, '.buildwithai', 'context.json');
+    const contextBeforeUnsafe = fs.readFileSync(contextFile, 'utf8');
+    for (const unsafeKey of ['__proto__.polluted', 'decisions.constructor.prototype.polluted']) {
+      const unsafeSet = runSync(['set', unsafeKey, 'yes'], testDir);
+      assert.strictEqual(unsafeSet.code, 1, `set ${unsafeKey} should fail`);
+      assert(unsafeSet.stderr.includes(`Cannot set "${unsafeKey}"`), 'Should say the key cannot be set');
+      assert(!unsafeSet.stdout.includes('Set "'), 'Should not claim the value was set');
+      assert.strictEqual(
+        fs.readFileSync(contextFile, 'utf8'),
+        contextBeforeUnsafe,
+        'A refused set must leave context.json unchanged'
+      );
+    }
     report['Set JSON values'] = 'PASS';
     console.log('   ✔ Context command correctly prints existing values and warns on missing keys.\n');
 

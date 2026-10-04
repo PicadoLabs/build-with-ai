@@ -308,6 +308,16 @@ async function runTests() {
   setByPath(lookalikeKeys, 'decisions.constructorType.prototypeName', 'ok');
   assert.deepStrictEqual(lookalikeKeys, { decisions: { constructorType: { prototypeName: 'ok' } } });
   assert.strictEqual(getByPath(lookalikeKeys, 'decisions.constructorType.prototypeName'), 'ok');
+  // setByPath reports whether it stored the value, so callers can tell the user when it did not
+  assert.strictEqual(setByPath({}, 'decisions.database', 'SQLite'), true);
+  for (const rejected of ['__proto__.polluted', 'decisions.constructor.prototype.x', '']) {
+    assert.strictEqual(
+      setByPath({}, rejected, 'yes'),
+      false,
+      `setByPath(${JSON.stringify(rejected)}) reports a rejection`
+    );
+  }
+  assert.strictEqual(setByPath(null, 'decisions.database', 'SQLite'), false);
   console.log('Context path edge cases passed.');
 
   const remoteData = { type: 'remote-test', title: 'Remote test', steps: [{ id: 'first', prompt: 'test prompt' }] };
