@@ -279,6 +279,35 @@ async function runTests() {
   const unchanged = { name: 'project' };
   setByPath(unchanged, '', 'ignored');
   assert.deepStrictEqual(unchanged, { name: 'project' });
+
+  // Context paths: prototype-affecting segments are rejected and never reach Object.prototype.
+  for (const unsafePath of [
+    '__proto__.polluted',
+    'constructor.prototype.polluted',
+    'prototype.polluted',
+    'decisions.__proto__.polluted',
+    'decisions.constructor.prototype.polluted',
+    ' __proto__.polluted ',
+    '__proto__',
+    'constructor',
+    'prototype'
+  ]) {
+    const target = { decisions: { database: 'SQLite' } };
+    setByPath(target, unsafePath, 'yes');
+    assert.strictEqual({}.polluted, undefined, `setByPath(${unsafePath}) must not pollute Object.prototype`);
+    assert.deepStrictEqual(
+      target,
+      { decisions: { database: 'SQLite' } },
+      `setByPath(${unsafePath}) must leave the object unchanged`
+    );
+    assert.strictEqual(getByPath(target, unsafePath), undefined, `getByPath(${unsafePath}) must return undefined`);
+  }
+  assert.strictEqual(getByPath({}, 'constructor.name'), undefined);
+  assert.strictEqual(getByPath({ decisions: {} }, 'decisions.__proto__'), undefined);
+  const lookalikeKeys = {};
+  setByPath(lookalikeKeys, 'decisions.constructorType.prototypeName', 'ok');
+  assert.deepStrictEqual(lookalikeKeys, { decisions: { constructorType: { prototypeName: 'ok' } } });
+  assert.strictEqual(getByPath(lookalikeKeys, 'decisions.constructorType.prototypeName'), 'ok');
   console.log('Context path edge cases passed.');
 
   const remoteData = { type: 'remote-test', title: 'Remote test', steps: [{ id: 'first', prompt: 'test prompt' }] };
