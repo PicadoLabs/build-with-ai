@@ -26,6 +26,8 @@ const { runExport, generateReadme, generateBuildLog } = require('../lib/export')
 
 const { copyToClipboard } = require('../lib/clipboard');
 
+const { validateTemplate } = require('../lib/validator');
+
 async function runIsolatedClipboardFallback(moduleSource) {
   const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-clipboard-'));
   const helperDir = path.join(isolatedRoot, 'lib');
@@ -634,6 +636,35 @@ async function runTests() {
     'Should flag missing placeholder cleanly'
   );
   console.log('  ✔ Missing requirements flagged cleanly without silent undefined injection.');
+
+  // Placeholders may use kebab-case identifiers, such as {{decisions.api-key}}
+  console.log('\n▶ Test 8b: Kebab-case Placeholders');
+  const kebabContext = {};
+  setByPath(kebabContext, 'decisions.api-key', 'sk-test');
+  setByPath(kebabContext, 'decisions.stripe-secret', 'whsec-test');
+  const kebabStep = {
+    id: 'kebab',
+    prompt: 'Key {{decisions.api-key}} and {{ decisions.stripe-secret }} and {{ decisions.not-set }}'
+  };
+  const kebabRes = resolveStepPrompt(kebabStep, kebabContext);
+  assert.strictEqual(
+    kebabRes.resolvedPrompt,
+    'Key sk-test and whsec-test and [MISSING: decisions.not-set]',
+    'Kebab-case placeholders resolve, and a missing one is flagged instead of left as raw text'
+  );
+  assert.deepStrictEqual(kebabRes.missingKeys, ['decisions.not-set']);
+  const kebabTemplate = (secondPrompt) => ({
+    title: 'Kebab template',
+    steps: [
+      { id: 'first', prompt: 'Record the key', writes: ['decisions.api-key'] },
+      { id: 'second', prompt: secondPrompt, requires: ['decisions.api-key'] }
+    ]
+  });
+  assert.deepStrictEqual(validateTemplate(kebabTemplate('Use {{decisions.api-key}}')), { valid: true, errors: [] });
+  const kebabInvalid = validateTemplate(kebabTemplate('Use {{decisions.other-key}}'));
+  assert.strictEqual(kebabInvalid.valid, false, 'A kebab-case placeholder that no step writes is reported');
+  assert(kebabInvalid.errors.some((e) => e.includes('decisions.other-key')));
+  console.log('  ✔ Kebab-case placeholders resolve and validate.');
 
   // Test 9: `back` Command Logic
   console.log('\n▶ Test 9: Back Navigation');
