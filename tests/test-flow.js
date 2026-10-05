@@ -205,6 +205,58 @@ async function runTests() {
     fs.renameSync = originalRename;
     fs.rmSync(atomicDir, { recursive: true, force: true });
   }
+
+  // A transient lock on the destination (antivirus, search indexer, editor watcher) is common on Windows.
+  const retryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-retry-'));
+  const failRename = (code, message = `simulated ${code}`) => Object.assign(new Error(message), { code });
+  try {
+    for (const code of ['EPERM', 'EBUSY', 'EACCES']) {
+      let renames = 0;
+      try {
+        fs.renameSync = (from, to) => {
+          renames += 1;
+          if (renames < 3) throw failRename(code);
+          return originalRename(from, to);
+        };
+        saveState({ value: `after-${code}` }, retryDir);
+      } finally {
+        fs.renameSync = originalRename;
+      }
+      assert.strictEqual(renames, 3, `${code} is retried until the rename succeeds`);
+      assert.strictEqual(loadState(retryDir).value, `after-${code}`, `Save completes after a transient ${code}`);
+    }
+
+    saveState({ value: 'original' }, retryDir);
+    const retryTarget = path.join(getStorageDir(retryDir), 'state.json');
+    for (const [code, expectedAttempts] of [
+      ['EBUSY', 3],
+      ['ENOSPC', 1]
+    ]) {
+      let attempts = 0;
+      try {
+        fs.renameSync = () => {
+          attempts += 1;
+          throw failRename(code);
+        };
+        assert.throws(
+          () => saveState({ value: 'replacement' }, retryDir),
+          new RegExp(`Unable to save.*simulated ${code}`)
+        );
+      } finally {
+        fs.renameSync = originalRename;
+      }
+      assert.strictEqual(attempts, expectedAttempts, `${code} is attempted ${expectedAttempts} time(s) before failing`);
+      assert.strictEqual(loadState(retryDir).value, 'original', 'A save that gives up preserves the original');
+      assert.deepStrictEqual(
+        fs.readdirSync(getStorageDir(retryDir)).filter((file) => file.startsWith('state.json')),
+        [path.basename(retryTarget)],
+        'A save that gives up leaves no temporary file behind'
+      );
+    }
+  } finally {
+    fs.renameSync = originalRename;
+    fs.rmSync(retryDir, { recursive: true, force: true });
+  }
   console.log('Atomic persistence tests passed.');
 
   const { formatElapsedTime } = require('../lib/ui');
