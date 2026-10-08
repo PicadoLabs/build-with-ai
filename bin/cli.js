@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 const { Command } = require('commander');
-const inquirer = require('inquirer');
 const pc = require('picocolors');
 
 const {
@@ -17,7 +16,7 @@ const {
 const { loadTemplates, getTemplate, resolveStepPrompt } = require('../lib/promptEngine');
 const { setByPath, getByPath, flattenObject } = require('../lib/contextBuilder');
 const { copyToClipboard } = require('../lib/clipboard');
-const { displayStep, renderProgressBar, displayBanner, formatElapsedTime } = require('../lib/ui');
+const { displayStep, renderProgressBar, displayBanner, formatElapsedTime, safePrompt } = require('../lib/ui');
 const { runInit } = require('../lib/init');
 const { runResume } = require('../lib/resume');
 const { runExport } = require('../lib/export');
@@ -234,7 +233,7 @@ program
     console.log('\n' + pc.bold(pc.cyan(`Completing Step ${currentStepNum}/${totalSteps}: ${currentStep.title}`)));
     console.log();
 
-    const { recordChoice } = await inquirer.prompt([
+    const { recordChoice } = await safePrompt([
       {
         type: 'list',
         name: 'recordChoice',
@@ -250,7 +249,7 @@ program
 
     // Full AI response
     if (recordChoice === 'full' || recordChoice === 'both') {
-      const { fullResponse } = await inquirer.prompt([
+      const { fullResponse } = await safePrompt([
         {
           type: 'input',
           name: 'fullResponse',
@@ -276,7 +275,7 @@ program
             .replace(/^decisions\./, '')
             .replace(/([A-Z])/g, ' $1')
             .replace(/^./, (str) => str.toUpperCase());
-          const { val } = await inquirer.prompt([
+          const { val } = await safePrompt([
             {
               type: 'input',
               name: 'val',
@@ -289,7 +288,7 @@ program
           }
         }
       } else {
-        const { generalDecision } = await inquirer.prompt([
+        const { generalDecision } = await safePrompt([
           {
             type: 'input',
             name: 'generalDecision',
@@ -319,7 +318,7 @@ program
       }
       console.log();
 
-      await inquirer.prompt([
+      await safePrompt([
         {
           type: 'list',
           name: 'confirmDecision',
@@ -417,7 +416,7 @@ program
         logger.error('Template not found. Cannot list steps.');
         process.exit(1);
       }
-      const { picked } = await inquirer.prompt([
+      const { picked } = await safePrompt([
         {
           type: 'list',
           name: 'picked',
@@ -734,7 +733,7 @@ program
       return;
     }
 
-    const { confirmReset } = await inquirer.prompt([
+    const { confirmReset } = await safePrompt([
       {
         type: 'confirm',
         name: 'confirmReset',
@@ -770,7 +769,7 @@ program.action(async () => {
     console.log(`${pc.bold('Progress:')} ${renderProgressBar(completedCount, totalSteps)}`);
     console.log();
 
-    const { nextAction } = await inquirer.prompt([
+    const { nextAction } = await safePrompt([
       {
         type: 'list',
         name: 'nextAction',
@@ -844,7 +843,7 @@ program.action(async () => {
         logger.error('Template not found.');
         return;
       }
-      const { picked } = await inquirer.prompt([
+      const { picked } = await safePrompt([
         {
           type: 'list',
           name: 'picked',
@@ -896,7 +895,7 @@ program.action(async () => {
     }
   } else {
     console.log(pc.yellow('No active project found in this directory.'));
-    const { startInit } = await inquirer.prompt([
+    const { startInit } = await safePrompt([
       {
         type: 'confirm',
         name: 'startInit',
