@@ -17,7 +17,7 @@ const {
 const { loadTemplates, getTemplate, resolveStepPrompt } = require('../lib/promptEngine');
 const { setByPath, getByPath, flattenObject } = require('../lib/contextBuilder');
 const { copyToClipboard } = require('../lib/clipboard');
-const { displayStep, renderProgressBar, displayBanner, formatElapsedTime } = require('../lib/ui');
+const { displayStep, renderProgressBar, displayBanner, formatElapsedTime, printTargetFileTips } = require('../lib/ui');
 const { runInit } = require('../lib/init');
 const { runResume } = require('../lib/resume');
 const { runExport } = require('../lib/export');
@@ -233,6 +233,10 @@ program
 
     console.log('\n' + pc.bold(pc.cyan(`Completing Step ${currentStepNum}/${totalSteps}: ${currentStep.title}`)));
     console.log();
+
+    // Soft, non-blocking nudge: warn if the step's declared target files
+    // have not been created in the workspace yet.
+    printTargetFileTips(currentStep.targetFiles);
 
     const { recordChoice } = await inquirer.prompt([
       {

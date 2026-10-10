@@ -28,6 +28,8 @@ const { copyToClipboard } = require('../lib/clipboard');
 
 const { validateTemplate } = require('../lib/validator');
 
+const { findMissingTargetFiles, printTargetFileTips } = require('../lib/ui');
+
 async function runIsolatedClipboardFallback(moduleSource) {
   const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-clipboard-'));
   const helperDir = path.join(isolatedRoot, 'lib');
@@ -891,6 +893,53 @@ async function runTests() {
   const versionOutput = execSync(`node "${cliPath}" --version`).toString().trim();
   assert.strictEqual(versionOutput, pkg.version, `--version should print ${pkg.version}, got ${versionOutput}`);
   console.log('  ✔ --version flag prints correct version and exits successfully.');
+
+  // Test 13: targetFiles soft validation helpers
+  console.log('\n Test 13: targetFiles existence check');
+  const targetFilesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-targetfiles-'));
+  try {
+    fs.writeFileSync(path.join(targetFilesDir, 'schema.prisma'), 'model User { id Int }', 'utf8');
+    fs.mkdirSync(path.join(targetFilesDir, 'lib'), { recursive: true });
+
+    assert.deepStrictEqual(
+      findMissingTargetFiles(['schema.prisma'], targetFilesDir),
+      [],
+      'Existing files must not be reported as missing'
+    );
+    assert.deepStrictEqual(
+      findMissingTargetFiles(['schema.prisma', 'lib/db.ts', 'scripts/'], targetFilesDir),
+      ['lib/db.ts', 'scripts/'],
+      'Missing files and directories must be reported in order'
+    );
+    assert.deepStrictEqual(findMissingTargetFiles([], targetFilesDir), [], 'Empty input returns empty');
+    assert.deepStrictEqual(findMissingTargetFiles(undefined, targetFilesDir), [], 'Undefined input returns empty');
+    assert.deepStrictEqual(
+      findMissingTargetFiles(['schema.prisma', '', null, 42], targetFilesDir),
+      [],
+      'Non-string and blank entries must be ignored'
+    );
+
+    // printTargetFileTips must print the friendly tip and stay non-blocking
+    const captured = [];
+    const originalLog = console.log;
+    console.log = (...args) => captured.push(args.join(' '));
+    let missing;
+    try {
+      missing = printTargetFileTips(['schema.prisma', 'lib/db.ts'], targetFilesDir);
+    } finally {
+      console.log = originalLog;
+    }
+    assert.deepStrictEqual(missing, ['lib/db.ts'], 'Only missing files are returned');
+    assert.strictEqual(captured.length, 1, 'One tip per missing file');
+    assert(
+      captured[0].includes('Tip: Target file "lib/db.ts" was not found in the workspace yet.'),
+      'Tip message must match the documented format'
+    );
+
+    console.log('  ✔ targetFiles existence check reports missing files and prints friendly tips.');
+  } finally {
+    fs.rmSync(targetFilesDir, { recursive: true, force: true });
+  }
 
   // Cleanup temp dir
   fs.rmSync(tempDir, { recursive: true, force: true });
