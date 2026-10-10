@@ -28,6 +28,8 @@ const { copyToClipboard } = require('../lib/clipboard');
 
 const { validateTemplate } = require('../lib/validator');
 
+const { findMissingTargetFiles, printTargetFileTips } = require('../lib/ui');
+
 async function runIsolatedClipboardFallback(moduleSource) {
   const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-clipboard-'));
   const helperDir = path.join(isolatedRoot, 'lib');
@@ -279,6 +281,84 @@ async function runTests() {
   for (const value of [undefined, null, '', 'invalid', 0]) {
     assert.strictEqual(formatElapsedTime(value, metricsNow), 'Unknown');
   }
+
+  // UTF-8 detection and ASCII fallback glyphs in lib/ui.
+  console.log('\n\u25b6 Test: UTF-8 detection and ASCII fallback glyphs');
+  const uiPath = require.resolve('../lib/ui');
+  const stripAnsi = (text) => text.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '');
+  // Loads a fresh copy of lib/ui with overridden platform/env. The callback
+  // runs while the overrides are active because isUtf8Supported() reads
+  // process.platform/process.env at call time; SYMBOLS is frozen at require.
+  function withFreshUi({ platform, env }, fn) {
+    const savedEnv = process.env;
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    try {
+      process.env = { ...savedEnv };
+      for (const key of ['WT_SESSION', 'VSCODE_PID', 'TERM_PROGRAM', 'LANG']) {
+        delete process.env[key];
+      }
+      Object.assign(process.env, env || {});
+      Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+      delete require.cache[uiPath];
+      return fn(require(uiPath));
+    } finally {
+      process.env = savedEnv;
+      Object.defineProperty(process, 'platform', platformDescriptor);
+    }
+  }
+
+  // isUtf8Supported() logic: non-Windows always supports UTF-8.
+  for (const platform of ['linux', 'darwin']) {
+    withFreshUi({ platform }, (ui) => {
+      assert.strictEqual(ui.isUtf8Supported(), true, `${platform} must support UTF-8`);
+      assert.strictEqual(ui.SYMBOLS.block, '\u2588', `${platform} must use Unicode glyphs`);
+    });
+  }
+  // Plain legacy Windows CMD (no UTF-8 indicators) falls back to ASCII.
+  withFreshUi({ platform: 'win32' }, (ui) => {
+    assert.strictEqual(ui.isUtf8Supported(), false, 'Legacy CMD must not support UTF-8');
+    assert.strictEqual(ui.SYMBOLS.block, '=', 'Legacy CMD must use ASCII glyphs');
+    assert.strictEqual(ui.SYMBOLS.side, '|', 'Legacy CMD must use ASCII box sides');
+  });
+  // Each UTF-8 indicator re-enables Unicode glyphs on Windows.
+  for (const env of [
+    { WT_SESSION: '1' },
+    { TERM_PROGRAM: 'vscode' },
+    { VSCODE_PID: '1234' },
+    { LANG: 'en_US.UTF-8' }
+  ]) {
+    withFreshUi({ platform: 'win32', env }, (ui) => {
+      assert.strictEqual(ui.isUtf8Supported(), true, `win32 with ${JSON.stringify(env)} must support UTF-8`);
+      assert.strictEqual(ui.SYMBOLS.block, '\u2588', 'UTF-8-capable Windows must use Unicode glyphs');
+    });
+  }
+
+  // renderProgressBar: Unicode vs ASCII fallback rendering (SYMBOLS is frozen at require).
+  const unicodeBar = withFreshUi({ platform: 'linux' }, (ui) => stripAnsi(ui.renderProgressBar(5, 10)));
+  assert(unicodeBar.includes('\u2588'), 'UTF-8 bar must use block glyphs');
+  assert(unicodeBar.includes('\u2591'), 'UTF-8 bar must use shade glyphs');
+  assert(!unicodeBar.includes('='), 'UTF-8 bar must not use ASCII fallbacks');
+  assert(unicodeBar.includes('50%'), 'Bar must show the completion percentage');
+  assert(unicodeBar.includes('(5/10 steps)'), 'Bar must show the step counts');
+
+  const asciiBar = withFreshUi({ platform: 'win32' }, (ui) => stripAnsi(ui.renderProgressBar(5, 10)));
+  assert(asciiBar.includes('='), 'ASCII bar must use = for filled blocks');
+  assert(asciiBar.includes('-'), 'ASCII bar must use - for empty blocks');
+  assert(!asciiBar.includes('\u2588'), 'ASCII bar must not use Unicode glyphs');
+  assert(!asciiBar.includes('\u2591'), 'ASCII bar must not use Unicode shade glyphs');
+  assert(asciiBar.includes('50%'), 'ASCII bar must still show the completion percentage');
+
+  // Both variants keep the same bar geometry.
+  for (const platform of ['linux', 'win32']) {
+    withFreshUi({ platform }, (ui) => {
+      assert.strictEqual(stripAnsi(ui.renderProgressBar(0, 0)), '[                    ] 0%');
+      const full = stripAnsi(ui.renderProgressBar(10, 10));
+      const expectedFill = platform === 'win32' ? '='.repeat(25) : '\u2588'.repeat(25);
+      assert(full.includes(expectedFill), 'Full bar must fill all 25 cells');
+    });
+  }
+  console.log('  \u2714 UTF-8 detection and ASCII fallback glyphs verified.');
+
   // Context paths: preserve existing dot-separator semantics and value types.
   const deepContext = {};
   setByPath(deepContext, 'decisions.auth.oauth.providers.google.clientId', 'client-123');
@@ -813,6 +893,121 @@ async function runTests() {
   const versionOutput = execSync(`node "${cliPath}" --version`).toString().trim();
   assert.strictEqual(versionOutput, pkg.version, `--version should print ${pkg.version}, got ${versionOutput}`);
   console.log('  ✔ --version flag prints correct version and exits successfully.');
+
+  // Test 13: targetFiles soft validation helpers
+  console.log('\n Test 13: targetFiles existence check');
+  const targetFilesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-targetfiles-'));
+  try {
+    fs.writeFileSync(path.join(targetFilesDir, 'schema.prisma'), 'model User { id Int }', 'utf8');
+    fs.mkdirSync(path.join(targetFilesDir, 'lib'), { recursive: true });
+
+    assert.deepStrictEqual(
+      findMissingTargetFiles(['schema.prisma'], targetFilesDir),
+      [],
+      'Existing files must not be reported as missing'
+    );
+    assert.deepStrictEqual(
+      findMissingTargetFiles(['schema.prisma', 'lib/db.ts', 'scripts/'], targetFilesDir),
+      ['lib/db.ts', 'scripts/'],
+      'Missing files and directories must be reported in order'
+    );
+    assert.deepStrictEqual(findMissingTargetFiles([], targetFilesDir), [], 'Empty input returns empty');
+    assert.deepStrictEqual(findMissingTargetFiles(undefined, targetFilesDir), [], 'Undefined input returns empty');
+    assert.deepStrictEqual(
+      findMissingTargetFiles(['schema.prisma', '', null, 42], targetFilesDir),
+      [],
+      'Non-string and blank entries must be ignored'
+    );
+
+    // printTargetFileTips must print the friendly tip and stay non-blocking
+    const captured = [];
+    const originalLog = console.log;
+    console.log = (...args) => captured.push(args.join(' '));
+    let missing;
+    try {
+      missing = printTargetFileTips(['schema.prisma', 'lib/db.ts'], targetFilesDir);
+    } finally {
+      console.log = originalLog;
+    }
+    assert.deepStrictEqual(missing, ['lib/db.ts'], 'Only missing files are returned');
+    assert.strictEqual(captured.length, 1, 'One tip per missing file');
+    assert(
+      captured[0].includes('Tip: Target file "lib/db.ts" was not found in the workspace yet.'),
+      'Tip message must match the documented format'
+    );
+
+    console.log('  ✔ targetFiles existence check reports missing files and prints friendly tips.');
+  } finally {
+    fs.rmSync(targetFilesDir, { recursive: true, force: true });
+  }
+
+  // Test 14: safePrompt cancels cleanly with exit status 130 on Ctrl+C
+  console.log('\\n Test 14: safePrompt Ctrl+C handling');
+  const safePromptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-safeprompt-'));
+  try {
+    // Spawns a child process so safePrompt's process.exit(130) does not kill
+    // this test runner. The child monkey-patches inquirer.prompt to simulate
+    // the requested outcome, then calls safePrompt once.
+    const runnerScript = path.join(safePromptDir, 'run-safe-prompt.js');
+    fs.writeFileSync(
+      runnerScript,
+      [
+        'const { safePrompt } = require(' + JSON.stringify(path.join(__dirname, '..', 'lib', 'ui.js')) + ');',
+        'const inquirer = require(' +
+          JSON.stringify(require.resolve('inquirer', { paths: [path.join(__dirname, '..')] })) +
+          ');',
+        'const mode = process.argv[2];',
+        "if (mode === 'exit-prompt-error') {",
+        "  const err = new Error('User force closed the prompt with 0 null');",
+        "  err.name = 'ExitPromptError';",
+        '  inquirer.prompt = async () => { throw err; };',
+        "} else if (mode === 'force-closed') {",
+        "  inquirer.prompt = async () => { throw new Error('User force closed the prompt'); };",
+        "} else if (mode === 'other-error') {",
+        "  inquirer.prompt = async () => { throw new Error('network exploded'); };",
+        '} else {',
+        "  inquirer.prompt = async () => ({ answer: 'yes' });",
+        '}',
+        "safePrompt([{ type: 'input', name: 'answer', message: 'q?' }])",
+        "  .then((answers) => { console.log('RESOLVED:' + JSON.stringify(answers)); })",
+        "  .catch((err) => { console.error('REJECTED:' + err.message); process.exit(1); });",
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+    const runMode = (mode) => spawnSync(process.execPath, [runnerScript, mode], { encoding: 'utf8' });
+
+    // Ctrl+C via ExitPromptError (inquirer v9+) -> clean exit 130
+    const exitPrompt = runMode('exit-prompt-error');
+    assert.strictEqual(exitPrompt.status, 130, 'ExitPromptError must exit with status 130');
+    assert(
+      exitPrompt.stdout.includes('Operation cancelled.'),
+      'Cancellation must print a friendly message instead of a stack trace'
+    );
+
+    // Ctrl+C via "force closed" (inquirer v8) -> clean exit 130
+    const forceClosed = runMode('force-closed');
+    assert.strictEqual(forceClosed.status, 130, '"force closed" cancellation must exit with status 130');
+
+    // Any other error is re-thrown, never swallowed into exit 130
+    const otherError = runMode('other-error');
+    assert.strictEqual(otherError.status, 1, 'Non-cancellation errors must not exit with 130');
+    assert(
+      otherError.stderr.includes('REJECTED:network exploded'),
+      'Non-cancellation errors must be re-thrown unchanged'
+    );
+
+    // Normal answers resolve through unchanged
+    const success = runMode('success');
+    assert.strictEqual(success.status, 0, 'Successful prompts must resolve normally');
+    assert(
+      success.stdout.includes('RESOLVED:{"answer":"yes"}'),
+      'safePrompt must return the prompt answers on success'
+    );
+    console.log('  ✔ safePrompt exits 130 on Ctrl+C and passes through other outcomes.');
+  } finally {
+    fs.rmSync(safePromptDir, { recursive: true, force: true });
+  }
 
   // Cleanup temp dir
   fs.rmSync(tempDir, { recursive: true, force: true });
