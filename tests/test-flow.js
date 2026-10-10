@@ -941,6 +941,74 @@ async function runTests() {
     fs.rmSync(targetFilesDir, { recursive: true, force: true });
   }
 
+  // Test 14: safePrompt cancels cleanly with exit status 130 on Ctrl+C
+  console.log('\\n Test 14: safePrompt Ctrl+C handling');
+  const safePromptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-safeprompt-'));
+  try {
+    // Spawns a child process so safePrompt's process.exit(130) does not kill
+    // this test runner. The child monkey-patches inquirer.prompt to simulate
+    // the requested outcome, then calls safePrompt once.
+    const runnerScript = path.join(safePromptDir, 'run-safe-prompt.js');
+    fs.writeFileSync(
+      runnerScript,
+      [
+        'const { safePrompt } = require(' + JSON.stringify(path.join(__dirname, '..', 'lib', 'ui.js')) + ');',
+        'const inquirer = require(' +
+          JSON.stringify(require.resolve('inquirer', { paths: [path.join(__dirname, '..')] })) +
+          ');',
+        'const mode = process.argv[2];',
+        "if (mode === 'exit-prompt-error') {",
+        "  const err = new Error('User force closed the prompt with 0 null');",
+        "  err.name = 'ExitPromptError';",
+        '  inquirer.prompt = async () => { throw err; };',
+        "} else if (mode === 'force-closed') {",
+        "  inquirer.prompt = async () => { throw new Error('User force closed the prompt'); };",
+        "} else if (mode === 'other-error') {",
+        "  inquirer.prompt = async () => { throw new Error('network exploded'); };",
+        '} else {',
+        "  inquirer.prompt = async () => ({ answer: 'yes' });",
+        '}',
+        "safePrompt([{ type: 'input', name: 'answer', message: 'q?' }])",
+        "  .then((answers) => { console.log('RESOLVED:' + JSON.stringify(answers)); })",
+        "  .catch((err) => { console.error('REJECTED:' + err.message); process.exit(1); });",
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+    const runMode = (mode) => spawnSync(process.execPath, [runnerScript, mode], { encoding: 'utf8' });
+
+    // Ctrl+C via ExitPromptError (inquirer v9+) -> clean exit 130
+    const exitPrompt = runMode('exit-prompt-error');
+    assert.strictEqual(exitPrompt.status, 130, 'ExitPromptError must exit with status 130');
+    assert(
+      exitPrompt.stdout.includes('Operation cancelled.'),
+      'Cancellation must print a friendly message instead of a stack trace'
+    );
+
+    // Ctrl+C via "force closed" (inquirer v8) -> clean exit 130
+    const forceClosed = runMode('force-closed');
+    assert.strictEqual(forceClosed.status, 130, '"force closed" cancellation must exit with status 130');
+
+    // Any other error is re-thrown, never swallowed into exit 130
+    const otherError = runMode('other-error');
+    assert.strictEqual(otherError.status, 1, 'Non-cancellation errors must not exit with 130');
+    assert(
+      otherError.stderr.includes('REJECTED:network exploded'),
+      'Non-cancellation errors must be re-thrown unchanged'
+    );
+
+    // Normal answers resolve through unchanged
+    const success = runMode('success');
+    assert.strictEqual(success.status, 0, 'Successful prompts must resolve normally');
+    assert(
+      success.stdout.includes('RESOLVED:{"answer":"yes"}'),
+      'safePrompt must return the prompt answers on success'
+    );
+    console.log('  ✔ safePrompt exits 130 on Ctrl+C and passes through other outcomes.');
+  } finally {
+    fs.rmSync(safePromptDir, { recursive: true, force: true });
+  }
+
   // Cleanup temp dir
   fs.rmSync(tempDir, { recursive: true, force: true });
   console.log('\n🎉 ALL TESTS PASSED SUCCESSFULLY! ✅\n');
