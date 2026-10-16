@@ -11,7 +11,10 @@ const {
   saveContext,
   saveHistory,
   getAllHistory,
-  resetProject
+  resetProject,
+  saveSnapshot,
+  deleteSnapshot,
+  undoLastStep
 } = require('../lib/state');
 const { loadTemplates, getTemplate, resolveStepPrompt } = require('../lib/promptEngine');
 const { setByPath, getByPath, flattenObject } = require('../lib/contextBuilder');
@@ -258,6 +261,11 @@ program
     console.log('\n' + pc.bold(pc.cyan(`Completing Step ${currentStepNum}/${totalSteps}: ${currentStep.title}`)));
     console.log();
 
+    // Snapshot state.json + context.json BEFORE this step's decisions are
+    // recorded, so `npx build-with-ai undo` can restore the exact pre-step
+    // state (#115). Removed again below if the user declines to advance.
+    saveSnapshot(currentStepNum);
+
     // Soft, non-blocking nudge: warn if the step's declared target files
     // have not been created in the workspace yet.
     const missingTargets = printTargetFileTips(currentStep.targetFiles);
@@ -287,6 +295,7 @@ program
         }
       ]);
       if (!advanceAnyway) {
+        deleteSnapshot(currentStepNum);
         console.log(
           pc.dim('Keeping the current step open. Create the missing files, then run `npx build-with-ai done` again.')
         );
@@ -448,6 +457,37 @@ program
     logger.success(`Moved back to Step ${prev}.`);
     console.log(pc.dim('History and recorded decisions were preserved.'));
     console.log(pc.cyan('Run ') + pc.bold(pc.green('npx build-with-ai next')) + pc.cyan(' to view this step prompt.'));
+    console.log();
+  });
+
+// ─────────────────────────────────────────────────
+// `undo` command — NEW in V1.4 (#115)
+// ─────────────────────────────────────────────────
+program
+  .command('undo')
+  .description('Undo the last completed step, restoring its state and context decisions.')
+  .action(() => {
+    if (!isInitialized()) {
+      logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
+      process.exit(1);
+    }
+
+    const result = undoLastStep();
+
+    if (!result) {
+      console.log();
+      logger.warn('Nothing to undo — no step snapshots found in .buildwithai/snapshots/.');
+      console.log(
+        pc.dim('Snapshots are saved automatically each time a step is completed with `npx build-with-ai done`.')
+      );
+      console.log();
+      return;
+    }
+
+    console.log();
+    logger.success(`Undone Step ${result.step}: restored the step counter and its context decisions.`);
+    console.log(pc.dim("The step's history file was removed."));
+    console.log(pc.cyan('Run ') + pc.bold(pc.green('npx build-with-ai next')) + pc.cyan(' to redo the step.'));
     console.log();
   });
 

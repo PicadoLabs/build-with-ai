@@ -18,7 +18,13 @@ const {
   getStorageDir,
   isBranchScopedEnabled,
   getCurrentGitBranch,
-  sanitizeBranchName
+  sanitizeBranchName,
+  getSnapshotsDir,
+  saveSnapshot,
+  loadSnapshot,
+  listSnapshots,
+  deleteSnapshot,
+  undoLastStep
 } = require('../lib/state');
 
 const { loadTemplates, loadRemoteTemplate, getTemplate, resolveStepPrompt } = require('../lib/promptEngine');
@@ -845,6 +851,125 @@ async function runTests() {
     'History file must NOT be deleted on back'
   );
   console.log('  ✔ Back command moved step back while preserving history.');
+
+  // Test 9b: Undo restores state and context from snapshots
+  console.log('\\n▶ Test 9b: Undo Step Snapshots & Rollback');
+  const undoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-undo-'));
+  try {
+    initState(
+      {
+        projectName: 'Undo Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Intermediate',
+        projectIdea: 'A demo project.',
+        totalSteps: 4
+      },
+      undoDir
+    );
+    saveContext({ project: { name: 'Undo Demo' }, decisions: { database: 'SQLite' } }, undoDir);
+
+    // Simulate completing step 1: snapshot first, then mutate.
+    const snapshotPath = saveSnapshot(1, undoDir);
+    assert.strictEqual(
+      snapshotPath,
+      path.join(undoDir, '.buildwithai', 'snapshots', 'step-01.json'),
+      'snapshot must live under .buildwithai/snapshots/'
+    );
+    assert.strictEqual(
+      getSnapshotsDir(undoDir),
+      path.join(undoDir, '.buildwithai', 'snapshots'),
+      'getSnapshotsDir resolves the snapshots directory'
+    );
+    const loaded = loadSnapshot(1, undoDir);
+    assert.strictEqual(loaded.step, 1, 'loadSnapshot reads the snapshot back');
+    assert.strictEqual(loaded.state.currentStep, 1, 'snapshot holds pre-step state');
+    assert.strictEqual(loaded.context.decisions.database, 'SQLite', 'snapshot holds pre-step context');
+    const ctxAfter = loadContext(undoDir);
+    ctxAfter.decisions.database = 'PostgreSQL';
+    ctxAfter.decisions.authStrategy = 'Clerk';
+    saveContext(ctxAfter, undoDir);
+    const stAfter = loadState(undoDir);
+    stAfter.currentStep = 2;
+    stAfter.completedSteps = [1];
+    saveState(stAfter, undoDir);
+    saveHistory(1, 'Step 1 AI response', undoDir);
+
+    // Snapshot a second completed step so the latest one is undone first.
+    saveSnapshot(2, undoDir);
+    const stAfter2 = loadState(undoDir);
+    stAfter2.currentStep = 3;
+    stAfter2.completedSteps = [1, 2];
+    saveState(stAfter2, undoDir);
+    assert.strictEqual(listSnapshots(undoDir).length, 2, 'two snapshots must be listed');
+
+    // Undo the latest step (step 2).
+    const undone2 = undoLastStep(undoDir);
+    assert.strictEqual(undone2.step, 2, 'undo must target the latest snapshot');
+    const restored2 = loadState(undoDir);
+    assert.strictEqual(restored2.currentStep, 2, 'step counter must move back to step 2');
+    assert.deepStrictEqual(restored2.completedSteps, [1], 'step 2 must leave completedSteps');
+    assert.strictEqual(loadContext(undoDir).decisions.database, 'PostgreSQL', 'context must be the pre-step-2 state');
+    assert.strictEqual(listSnapshots(undoDir).length, 1, 'consumed snapshot must be removed');
+
+    // Undo step 1: both step counter AND context decisions roll back.
+    const undone1 = undoLastStep(undoDir);
+    assert.strictEqual(undone1.step, 1);
+    const restored1 = loadState(undoDir);
+    assert.strictEqual(restored1.currentStep, 1, 'step counter restored to 1');
+    assert.deepStrictEqual(restored1.completedSteps, [], 'no completed steps remain');
+    const rolledBack = loadContext(undoDir);
+    assert.strictEqual(rolledBack.decisions.database, 'SQLite', 'step 1 decision must be rolled back');
+    assert.strictEqual(rolledBack.decisions.authStrategy, undefined, 'later decisions must not survive undo');
+    assert(
+      !fs.existsSync(path.join(undoDir, '.buildwithai', 'history', 'step-01.md')),
+      'the undone step history file must be removed'
+    );
+
+    // Safe fallback when no snapshot exists.
+    assert.strictEqual(undoLastStep(undoDir), null, 'undo with no snapshots must return null');
+    assert(deleteSnapshot(99, undoDir) === false, 'deleting a missing snapshot must be a no-op');
+
+    // Corrupt snapshots are consumed so undo can fall back instead of getting stuck.
+    saveSnapshot(1, undoDir);
+    fs.writeFileSync(path.join(undoDir, '.buildwithai', 'snapshots', 'step-01.json'), '{ broken', 'utf8');
+    assert.strictEqual(undoLastStep(undoDir), null, 'corrupt snapshot must fall back to no-op');
+    assert.strictEqual(listSnapshots(undoDir).length, 0, 'corrupt snapshot must be consumed');
+
+    // Snapshots are isolated per branch when BUILD_WITH_AI_BRANCH_SCOPED=1.
+    const previousScoped = process.env.BUILD_WITH_AI_BRANCH_SCOPED;
+    process.env.BUILD_WITH_AI_BRANCH_SCOPED = '1';
+    try {
+      execSync('git init -q -b main', { cwd: undoDir, stdio: 'ignore' });
+      execSync('git config user.email test@example.com && git config user.name Test', {
+        cwd: undoDir,
+        stdio: 'ignore'
+      });
+      initState(
+        {
+          projectName: 'Scoped Undo',
+          templateId: 'web-app',
+          templateTitle: 'Web App',
+          experienceLevel: 'Intermediate',
+          projectIdea: 'Scoped demo.',
+          totalSteps: 4
+        },
+        undoDir
+      );
+      saveSnapshot(1, undoDir);
+      assert(
+        fs.existsSync(path.join(undoDir, '.buildwithai', 'branches', 'main', 'snapshots', 'step-01.json')),
+        'snapshots must be branch-scoped when enabled'
+      );
+      const undoneScoped = undoLastStep(undoDir);
+      assert.strictEqual(undoneScoped.step, 1, 'undo works inside branch-scoped storage');
+    } finally {
+      process.env.BUILD_WITH_AI_BRANCH_SCOPED = previousScoped || '';
+    }
+    console.log('  ✔ undo restores step counter and context decisions, cleans history, and falls back safely.');
+  } finally {
+    fs.rmSync(undoDir, { recursive: true, force: true });
+  }
 
   // Restore step for export test
   state.currentStep = 3;
