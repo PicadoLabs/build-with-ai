@@ -27,11 +27,11 @@ const { resolveModel, DEFAULT_MODEL_MAPPINGS, getMappings } = require('../lib/mo
 
 const { fetchRegistry, filterTemplates } = require('../lib/registry');
 
-const { getByPath, setByPath, flattenObject, formatContextAsMarkdown } = require('../lib/contextBuilder');
+const { getByPath, setByPath, flattenObject } = require('../lib/contextBuilder');
 
 const { parseEditorValue, formatEditorValue, summarizeValue, runConfigEditor } = require('../lib/configEditor');
 
-const { runExport, generateReadme, generateBuildLog, resolveReadmePath } = require('../lib/export');
+const { runExport, resolveReadmePath } = require('../lib/export');
 
 const { copyToClipboard } = require('../lib/clipboard');
 
@@ -931,7 +931,6 @@ async function runTests() {
   const projectTemplatesDir = path.join(__dirname, '..', 'templates');
 
   const badTemplatePath = path.join(projectTemplatesDir, 'bad-template.json');
-  const validTemplatePath = path.join(projectTemplatesDir, 'web-app.json');
 
   // Temporarily write a malformed JSON file into the project templates directory
   fs.writeFileSync(badTemplatePath, '{ malformed json content', 'utf8');
