@@ -1540,6 +1540,159 @@ async function runTests() {
   );
   console.log('  ✔ Registry fetch handles success, 404, offline, and timeout.');
 
+  // Test: MCP stdio server (#110)
+  console.log('\n▶ Test: MCP stdio server');
+  const { runMcpServer, handleRequest, TOOL_DEFINITIONS, PROTOCOL_VERSION } = require('../lib/mcp');
+  const { PassThrough } = require('stream');
+
+  assert.strictEqual(TOOL_DEFINITIONS.length, 4, 'MCP server must expose exactly 4 tools');
+  assert.deepStrictEqual(TOOL_DEFINITIONS.map((t) => t.name).sort(), [
+    'complete_step',
+    'get_active_prompt',
+    'get_context',
+    'get_workflow_status'
+  ]);
+  for (const tool of TOOL_DEFINITIONS) {
+    assert.strictEqual(typeof tool.description, 'string');
+    assert.strictEqual(tool.inputSchema.type, 'object');
+  }
+
+  const mcpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-mcp-'));
+  try {
+    initState(
+      {
+        projectName: 'MCP Demo',
+        templateId: 'web-app',
+        templateTitle: 'Full-Stack Web Application',
+        experienceLevel: 'Beginner',
+        projectIdea: 'A demo project.',
+        totalSteps: 6
+      },
+      mcpDir
+    );
+
+    // Unit: initialize handshake
+    const initRes = handleRequest(
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: PROTOCOL_VERSION } },
+      mcpDir
+    );
+    assert.strictEqual(initRes.result.protocolVersion, PROTOCOL_VERSION);
+    assert.deepStrictEqual(initRes.result.capabilities, { tools: {} });
+    assert.strictEqual(initRes.result.serverInfo.name, 'build-with-ai');
+
+    // Unit: notifications produce no response
+    assert.strictEqual(handleRequest({ jsonrpc: '2.0', method: 'notifications/initialized' }, mcpDir), null);
+
+    // Unit: unknown method -> Method not found
+    const unknownMethod = handleRequest({ jsonrpc: '2.0', id: 9, method: 'nope' }, mcpDir);
+    assert.strictEqual(unknownMethod.error.code, -32601);
+
+    // Unit: invalid request shape
+    const invalidReq = handleRequest([1, 2, 3], mcpDir);
+    assert.strictEqual(invalidReq.error.code, -32600);
+
+    // Unit: tools/call without an initialized project
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-mcp-empty-'));
+    try {
+      const uninit = handleRequest(
+        { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_workflow_status', arguments: {} } },
+        emptyDir
+      );
+      assert.strictEqual(uninit.result.isError, true);
+      assert(uninit.result.content[0].text.includes('npx build-with-ai init'));
+    } finally {
+      fs.rmSync(emptyDir, { recursive: true, force: true });
+    }
+
+    // End-to-end over stdio streams: full MCP session
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let outBuffer = '';
+    output.on('data', (chunk) => {
+      outBuffer += chunk.toString();
+    });
+    const serverDone = runMcpServer({ stdin: input, stdout: output, cwd: mcpDir });
+
+    const session = [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: PROTOCOL_VERSION } },
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_workflow_status', arguments: {} } },
+      { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'get_active_prompt', arguments: {} } },
+      {
+        jsonrpc: '2.0',
+        id: 5,
+        method: 'tools/call',
+        params: {
+          name: 'complete_step',
+          arguments: { decisions: { 'decisions.database': 'PostgreSQL' }, response: '# Step 1 done' }
+        }
+      },
+      { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'get_workflow_status', arguments: {} } },
+      {
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: { name: 'get_context', arguments: { key: 'decisions.database' } }
+      },
+      { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'unknown_tool', arguments: {} } }
+    ];
+    for (const message of session) {
+      input.write(`${JSON.stringify(message)}\n`);
+    }
+    input.write('this is not json\n');
+    input.end();
+    await serverDone;
+
+    const responses = outBuffer
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    // 8 request responses + 1 parse-error response; the notification gets none.
+    assert.strictEqual(responses.length, 9, 'Every request except notifications must get exactly one response');
+    const byId = Object.fromEntries(responses.filter((r) => r.id !== null).map((r) => [r.id, r]));
+
+    assert.strictEqual(byId[1].result.serverInfo.name, 'build-with-ai');
+    assert.strictEqual(byId[2].result.tools.length, 4);
+
+    const statusBefore = JSON.parse(byId[3].result.content[0].text);
+    assert.strictEqual(statusBefore.currentStep, 1);
+    assert.strictEqual(statusBefore.progressPercent, 0);
+    assert.deepStrictEqual(statusBefore.decisions, {});
+
+    const promptRes = JSON.parse(byId[4].result.content[0].text);
+    assert.strictEqual(promptRes.step, 1);
+    assert(promptRes.prompt.includes('MCP Demo'), 'Active prompt must be interpolated');
+    assert(Array.isArray(promptRes.targetFiles));
+
+    const completed = JSON.parse(byId[5].result.content[0].text);
+    assert.strictEqual(completed.completedStep, 1);
+    assert.strictEqual(completed.advancedToStep, 2);
+    assert.deepStrictEqual(completed.recordedDecisions, ['decisions.database']);
+    assert(completed.historyPath.includes('step-01.md'));
+
+    const statusAfter = JSON.parse(byId[6].result.content[0].text);
+    assert.strictEqual(statusAfter.currentStep, 2, 'complete_step must advance the workflow');
+    assert.deepStrictEqual(statusAfter.completedSteps, [1]);
+    assert.deepStrictEqual(statusAfter.decisions, { database: 'PostgreSQL' });
+
+    assert.strictEqual(byId[7].result.content[0].text, 'PostgreSQL', 'get_context key lookup works');
+    assert.strictEqual(byId[8].result.isError, true, 'Unknown tool must return isError');
+
+    const parseError = responses.find((r) => r.id === null);
+    assert.strictEqual(parseError.error.code, -32700, 'Malformed JSON must return a Parse error');
+
+    // State on disk reflects the tool-driven progression
+    assert.strictEqual(loadState(mcpDir).currentStep, 2);
+    assert.strictEqual(loadContext(mcpDir).decisions.database, 'PostgreSQL');
+    assert(
+      fs.readFileSync(path.join(mcpDir, '.buildwithai', 'history', 'step-01.md'), 'utf8').includes('# Step 1 done')
+    );
+    console.log('  ✔ MCP stdio server handles a full session: initialize, tools, state progression.');
+  } finally {
+    fs.rmSync(mcpDir, { recursive: true, force: true });
+  }
+
   // Cleanup temp dir
   fs.rmSync(tempDir, { recursive: true, force: true });
   console.log('\n🎉 ALL TESTS PASSED SUCCESSFULLY! ✅\n');

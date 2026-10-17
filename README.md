@@ -245,6 +245,7 @@ Use `--out-dir <path>` to export to a custom directory, `--dry-run` to preview o
 | `npx build-with-ai export --force` | Overwrite an existing `README.md` explicitly. |
 | `npx build-with-ai list [-s <query>] [--json]` | List and search available templates with step counts. |
 | `npx build-with-ai reset` | Remove `.buildwithai/` state while leaving project source code intact. |
+| `npx build-with-ai mcp` | Start a native MCP stdio server exposing the workflow as tools. |
 
 ### Headless & CI Scripting
 
@@ -259,6 +260,25 @@ npx build-with-ai next --json | ConvertFrom-Json | Select-Object -ExpandProperty
 
 # Disable clipboard globally in headless environments
 export BUILD_WITH_AI_NO_COPY=1
+```
+
+### MCP Server (AI-native editors)
+
+`npx build-with-ai mcp` starts a native [Model Context Protocol](https://modelcontextprotocol.io/) stdio
+server, so editor agents (Cursor, Windsurf, Claude Code) and Claude Desktop can drive the workflow
+directly. Available tools: `get_workflow_status`, `get_active_prompt`, `complete_step`, `get_context`.
+
+```jsonc
+// Cursor: .cursor/mcp.json — Claude Desktop: claude_desktop_config.json ("mcpServers")
+{
+  "mcpServers": {
+    "build-with-ai": {
+      "command": "npx",
+      "args": ["build-with-ai", "mcp"],
+      "cwd": "/path/to/your/project"
+    }
+  }
+}
 ```
 
 ---
