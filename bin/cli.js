@@ -16,7 +16,8 @@ const {
 const { loadTemplates, getTemplate, resolveStepPrompt } = require('../lib/promptEngine');
 const { setByPath, getByPath, flattenObject } = require('../lib/contextBuilder');
 const { runConfigEditor, formatEditorValue } = require('../lib/configEditor');
-const { copyToClipboard } = require('../lib/clipboard');
+const { copyToClipboard, readFromClipboard } = require('../lib/clipboard');
+const { parseDecisions } = require('../lib/decisionParser');
 const {
   displayStep,
   renderProgressBar,
@@ -232,7 +233,9 @@ program
 program
   .command('done')
   .description('Record AI decisions/response for the current step and advance.')
-  .action(async () => {
+  .option('--from-clipboard', 'Read the AI response from the system clipboard and auto-extract decisions')
+  .option('--auto', 'Alias for --from-clipboard')
+  .action(async (options) => {
     if (!isInitialized()) {
       logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
       process.exit(1);
@@ -300,44 +303,48 @@ program
       }
     }
 
-    const { recordChoice } = await safePrompt([
-      {
-        type: 'list',
-        name: 'recordChoice',
-        message: 'How would you like to record the result of this step?',
-        choices: [
-          { name: 'Enter short summary / decisions (Recommended for context injection)', value: 'decisions' },
-          { name: 'Paste full AI response (Saves raw markdown to history/)', value: 'full' },
-          { name: 'Both (Enter decisions AND save full AI response)', value: 'both' },
-          { name: 'Skip saving details (Just mark step complete)', value: 'skip' }
-        ]
-      }
-    ]);
-
-    // Full AI response
-    if (recordChoice === 'full' || recordChoice === 'both') {
-      const { fullResponse } = await safePrompt([
-        {
-          type: 'input',
-          name: 'fullResponse',
-          message: 'Paste or enter the AI response (summary or key notes):',
-          default: ''
-        }
-      ]);
-
-      if (fullResponse && fullResponse.trim()) {
-        const savedPath = saveHistory(currentStepNum, fullResponse.trim());
-        logger.success(`Saved response to ${savedPath}`);
+    // --from-clipboard / --auto (#111): read the AI response straight from the
+    // system clipboard, save the full markdown to history/, and heuristically
+    // extract the step's decision keys. Falls back to interactive prompts when
+    // the clipboard is empty or unreadable.
+    const useClipboard = Boolean(options.fromClipboard || options.auto);
+    let clipboardText = null;
+    if (useClipboard) {
+      clipboardText = await readFromClipboard();
+      if (clipboardText) {
+        const savedPath = saveHistory(currentStepNum, clipboardText);
+        logger.success(`Saved clipboard response to ${savedPath}`);
+      } else {
+        console.log(pc.yellow('Could not read any text from the clipboard. Falling back to interactive prompts.'));
       }
     }
 
-    // Decisions input
-    if (recordChoice === 'decisions' || recordChoice === 'both') {
-      console.log();
-      console.log(pc.bold(pc.yellow('Recording key decisions for future step prompts:')));
+    if (clipboardText) {
+      const { found, missing } = parseDecisions(clipboardText, stepWrites);
+      const extractedKeys = Object.keys(found);
 
-      if (stepWrites.length > 0) {
-        for (const writeKey of stepWrites) {
+      if (extractedKeys.length > 0) {
+        console.log();
+        console.log(pc.bold(pc.green('Extracted decisions from clipboard:')));
+        for (const writeKey of extractedKeys) {
+          const keyLabel = writeKey
+            .replace(/^decisions\./, '')
+            .replace(/([A-Z])/g, ' $1')
+            .replace(/^./, (str) => str.toUpperCase());
+          console.log(`  ${pc.dim('•')} ${pc.bold(keyLabel)}: ${found[writeKey]}`);
+          setByPath(context, writeKey, found[writeKey]);
+        }
+        saveContext(context);
+        logger.success('Saved decisions to context.json');
+      } else {
+        console.log();
+        console.log(pc.yellow('No decision values could be detected in the clipboard text.'));
+      }
+
+      if (missing.length > 0) {
+        console.log();
+        console.log(pc.bold(pc.yellow('The following decisions were not detected — please enter them manually:')));
+        for (const writeKey of missing) {
           const keyLabel = writeKey
             .replace(/^decisions\./, '')
             .replace(/([A-Z])/g, ' $1')
@@ -354,7 +361,9 @@ program
             setByPath(context, writeKey, val.trim());
           }
         }
-      } else {
+        saveContext(context);
+        logger.success('Saved decisions to context.json');
+      } else if (stepWrites.length === 0) {
         const { generalDecision } = await safePrompt([
           {
             type: 'input',
@@ -366,10 +375,83 @@ program
         if (generalDecision && generalDecision.trim()) {
           setByPath(context, `decisions.${currentStep.id.replace(/-/g, '_')}`, generalDecision.trim());
         }
+        saveContext(context);
+        logger.success('Saved decisions to context.json');
+      }
+    } else {
+      const { recordChoice } = await safePrompt([
+        {
+          type: 'list',
+          name: 'recordChoice',
+          message: 'How would you like to record the result of this step?',
+          choices: [
+            { name: 'Enter short summary / decisions (Recommended for context injection)', value: 'decisions' },
+            { name: 'Paste full AI response (Saves raw markdown to history/)', value: 'full' },
+            { name: 'Both (Enter decisions AND save full AI response)', value: 'both' },
+            { name: 'Skip saving details (Just mark step complete)', value: 'skip' }
+          ]
+        }
+      ]);
+
+      // Full AI response
+      if (recordChoice === 'full' || recordChoice === 'both') {
+        // Multi-line-safe editor when the clipboard read failed: pasting large
+        // AI responses into single-line terminal prompts can truncate text.
+        const { fullResponse } = await safePrompt([
+          {
+            type: useClipboard ? 'editor' : 'input',
+            name: 'fullResponse',
+            message: 'Paste or enter the AI response (summary or key notes):',
+            default: ''
+          }
+        ]);
+
+        if (fullResponse && fullResponse.trim()) {
+          const savedPath = saveHistory(currentStepNum, fullResponse.trim());
+          logger.success(`Saved response to ${savedPath}`);
+        }
       }
 
-      saveContext(context);
-      logger.success('Saved decisions to context.json');
+      // Decisions input
+      if (recordChoice === 'decisions' || recordChoice === 'both') {
+        console.log();
+        console.log(pc.bold(pc.yellow('Recording key decisions for future step prompts:')));
+
+        if (stepWrites.length > 0) {
+          for (const writeKey of stepWrites) {
+            const keyLabel = writeKey
+              .replace(/^decisions\./, '')
+              .replace(/([A-Z])/g, ' $1')
+              .replace(/^./, (str) => str.toUpperCase());
+            const { val } = await safePrompt([
+              {
+                type: 'input',
+                name: 'val',
+                message: `Decision for "${keyLabel}" (${writeKey}):`,
+                default: ''
+              }
+            ]);
+            if (val && val.trim()) {
+              setByPath(context, writeKey, val.trim());
+            }
+          }
+        } else {
+          const { generalDecision } = await safePrompt([
+            {
+              type: 'input',
+              name: 'generalDecision',
+              message: 'Summary / decision for this step:',
+              default: ''
+            }
+          ]);
+          if (generalDecision && generalDecision.trim()) {
+            setByPath(context, `decisions.${currentStep.id.replace(/-/g, '_')}`, generalDecision.trim());
+          }
+        }
+
+        saveContext(context);
+        logger.success('Saved decisions to context.json');
+      }
     }
 
     // Soft-check confirmation
