@@ -21,7 +21,13 @@ const {
   sanitizeBranchName
 } = require('../lib/state');
 
-const { loadTemplates, loadRemoteTemplate, getTemplate, resolveStepPrompt } = require('../lib/promptEngine');
+const {
+  loadTemplates,
+  loadRemoteTemplate,
+  getTemplate,
+  resolveStepPrompt,
+  buildArchitecturalContract
+} = require('../lib/promptEngine');
 
 const { resolveModel, DEFAULT_MODEL_MAPPINGS, getMappings } = require('../lib/models');
 
@@ -821,10 +827,13 @@ async function runTests() {
     prompt: 'Key {{decisions.api-key}} and {{ decisions.stripe-secret }} and {{ decisions.not-set }}'
   };
   const kebabRes = resolveStepPrompt(kebabStep, kebabContext);
-  assert.strictEqual(
-    kebabRes.resolvedPrompt,
-    'Key sk-test and whsec-test and [MISSING: decisions.not-set]',
+  assert(
+    kebabRes.resolvedPrompt.endsWith('Key sk-test and whsec-test and [MISSING: decisions.not-set]'),
     'Kebab-case placeholders resolve, and a missing one is flagged instead of left as raw text'
+  );
+  assert(
+    kebabRes.resolvedPrompt.startsWith('### STRICT ARCHITECTURAL CONSTRAINTS (DO NOT ALTER)'),
+    'Recorded decisions anchor an architectural contract at the top of the prompt'
   );
   assert.deepStrictEqual(kebabRes.missingKeys, ['decisions.not-set']);
   const kebabTemplate = (secondPrompt) => ({
@@ -839,6 +848,65 @@ async function runTests() {
   assert.strictEqual(kebabInvalid.valid, false, 'A kebab-case placeholder that no step writes is reported');
   assert(kebabInvalid.errors.some((e) => e.includes('decisions.other-key')));
   console.log('  ✔ Kebab-case placeholders resolve and validate.');
+
+  // Test 8c: Immutable architectural contract anchoring (#109)
+  console.log('\n▶ Test 8c: Architectural contract anchoring');
+  const contractContext = {
+    project: { name: 'ShopStack', experienceLevel: 'Intermediate' },
+    decisions: {
+      framework: 'Next.js 14',
+      database: 'PostgreSQL with Prisma',
+      auth: 'NextAuth.js',
+      deploymentPlatform: 'Vercel'
+    }
+  };
+  const anchoredStep = { id: 'anchored', prompt: 'Build the {{decisions.database}} schema.' };
+  const anchoredRes = resolveStepPrompt(anchoredStep, contractContext);
+  assert(
+    anchoredRes.resolvedPrompt.startsWith('### STRICT ARCHITECTURAL CONSTRAINTS (DO NOT ALTER)'),
+    'Prompt must start with the contract header when decisions exist'
+  );
+  assert(anchoredRes.resolvedPrompt.includes('- Project: ShopStack (Level: Intermediate)'), 'Contract pins project');
+  assert(anchoredRes.resolvedPrompt.includes('- Primary Framework: Next.js 14'), 'Contract pins framework');
+  assert(anchoredRes.resolvedPrompt.includes('- Database / ORM: PostgreSQL with Prisma'), 'Contract pins database');
+  assert(anchoredRes.resolvedPrompt.includes('- Authentication: NextAuth.js'), 'Contract pins auth');
+  assert(
+    anchoredRes.resolvedPrompt.includes('- Deployment Platform: Vercel'),
+    'Contract dynamically gathers all other recorded step.writes'
+  );
+  assert(
+    anchoredRes.resolvedPrompt.includes('Strict Requirement: Adhere to these exact choices.'),
+    'Contract ends with the strict requirement'
+  );
+  assert(
+    anchoredRes.resolvedPrompt.includes('Build the PostgreSQL with Prisma schema.'),
+    'Original prompt follows the contract block'
+  );
+  assert(!anchoredRes.resolvedPrompt.includes('undefined'), 'No undefined values leak into the contract');
+  assert(!anchoredRes.resolvedPrompt.includes('[MISSING:'), 'No missing markers leak into the contract');
+
+  // Missing decision variables are omitted cleanly.
+  const partialContext = { project: { name: 'Partial' }, decisions: { database: 'SQLite' } };
+  const partialRes = resolveStepPrompt(anchoredStep, partialContext);
+  assert(partialRes.resolvedPrompt.includes('- Database / ORM: SQLite'), 'Recorded decision is anchored');
+  assert(!partialRes.resolvedPrompt.includes('Primary Framework:'), 'Missing framework is omitted cleanly');
+  assert(!partialRes.resolvedPrompt.includes('Authentication:'), 'Missing auth is omitted cleanly');
+  assert(partialRes.resolvedPrompt.includes('- Project: Partial'), 'Project line renders without a level');
+
+  // No decisions → no contract block at all.
+  const emptyRes = resolveStepPrompt({ id: 'empty', prompt: 'Do the thing.' }, { project: { name: 'X' } });
+  assert.strictEqual(emptyRes.architecturalContract, '', 'No decisions means no contract');
+  assert(
+    !emptyRes.resolvedPrompt.includes('STRICT ARCHITECTURAL CONSTRAINTS'),
+    'Prompt stays clean when no decisions exist'
+  );
+  assert.strictEqual(emptyRes.resolvedPrompt, 'Do the thing.', 'Prompt is unchanged without decisions');
+
+  // Object decision values render as JSON rather than [object Object].
+  const objectContract = buildArchitecturalContract({ decisions: { auth: { provider: 'Auth0', mfa: true } } });
+  assert(objectContract.includes('- Authentication:'), 'Object decision is anchored');
+  assert(objectContract.includes('"provider":"Auth0"'), 'Object decision renders as JSON');
+  console.log('  ✔ Architectural contract anchoring verified.');
 
   // Test 9: `back` Command Logic
   console.log('\n▶ Test 9: Back Navigation');
