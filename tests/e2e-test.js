@@ -189,7 +189,7 @@ async function executeFullE2ETest() {
     // Step 2: Init
     // -------------------------------------------------------------
     console.log('🔹 2. Testing `build-with-ai init` (Expense Tracker)...');
-    const initRes = await runInteractiveProcess(['init'], testDir, [
+    const _initRes = await runInteractiveProcess(['init'], testDir, [
       (out) => (out.includes('Select project type') ? '\r\n' : null),
       (out) => (out.includes('experience level') ? '\r\n' : null),
       (out) => (out.includes('Project name') ? 'Expense Tracker\r\n' : null),
@@ -284,7 +284,7 @@ async function executeFullE2ETest() {
     // Step 4: Done — summary path (Step 1)
     // -------------------------------------------------------------
     console.log('🔹 4. Testing `build-with-ai done` (Summary / Decisions path)...');
-    const done1Res = await runInteractiveProcess(['done'], testDir, [
+    const _done1Res = await runInteractiveProcess(['done'], testDir, [
       (out) => (out.includes('How would you like to record') ? '\r\n' : null),
       (out) => (out.includes('Target Audience') ? 'Students and freelance professionals\r\n' : null),
       (out) =>
@@ -322,7 +322,7 @@ async function executeFullE2ETest() {
 
     const fullResponseMock =
       '### MVP Specification\n1. Add/edit expense\n2. Category breakdown charts\n3. Export to CSV';
-    const done2Res = await runInteractiveProcess(['done'], testDir, [
+    const _done2Res = await runInteractiveProcess(['done'], testDir, [
       (out) => (out.includes('How would you like to record') ? '\u001b[B\u001b[B\r\n' : null), // Select "Both"
       (out) => (out.includes('Paste or enter the AI response') ? `${fullResponseMock}\r\n` : null),
       (out) => (out.includes('Mvp Features') ? 'Add/edit expenses, category breakdown, CSV export\r\n' : null),
@@ -720,7 +720,7 @@ async function executeFullE2ETest() {
     console.log('🔹 12. Testing `build-with-ai reset`...');
     fs.writeFileSync(path.join(testDir, 'server.js'), 'console.log("user app code");', 'utf8');
 
-    const resetRes = await runInteractiveProcess(['reset'], testDir, [
+    const _resetRes = await runInteractiveProcess(['reset'], testDir, [
       (out) => (out.includes('Are you sure you want to reset') ? 'y\r\n' : null)
     ]);
 
