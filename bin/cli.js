@@ -385,7 +385,7 @@ program
       }
       console.log();
 
-      await safePrompt([
+      const { confirmDecision } = await safePrompt([
         {
           type: 'list',
           name: 'confirmDecision',
@@ -397,6 +397,16 @@ program
           ]
         }
       ]);
+      if (confirmDecision !== 'yes') {
+        console.log(
+          pc.dim(
+            confirmDecision === 'later'
+              ? 'Keeping the current step open. Revisit these decisions, then run `npx build-with-ai done` again.'
+              : 'Keeping the current step open. Decide the remaining outcomes, then run `npx build-with-ai done` again.'
+          )
+        );
+        return;
+      }
     }
 
     // Mark step complete and advance
