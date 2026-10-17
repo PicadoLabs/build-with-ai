@@ -56,6 +56,17 @@ program
   .version(require('../package.json').version);
 
 program
+  .command('mcp')
+  .description('Start a native Model Context Protocol (MCP) stdio server exposing the workflow as tools.')
+  .action(() => {
+    const { runMcpServer } = require('../lib/mcp');
+    runMcpServer().catch((err) => {
+      process.stderr.write(`MCP server error: ${err && err.message ? err.message : String(err)}\n`);
+      process.exitCode = 1;
+    });
+  });
+
+program
   .command('history [stepNumber]')
   .description('List recorded step logs or display the full markdown for a step.')
   .option('--json', 'Output history entries as JSON')
