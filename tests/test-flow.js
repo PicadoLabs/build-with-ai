@@ -42,7 +42,9 @@ const {
   RULES_BLOCK_END
 } = require('../lib/rules');
 
-const { copyToClipboard } = require('../lib/clipboard');
+const { copyToClipboard, readFromClipboard } = require('../lib/clipboard');
+
+const { parseDecisions } = require('../lib/decisionParser');
 
 const { validateTemplate } = require('../lib/validator');
 
@@ -74,6 +76,38 @@ async function runIsolatedClipboardFallback(moduleSource) {
 
     const isolatedHelper = require(helperPath);
     return await isolatedHelper.copyToClipboard('fallback test');
+  } finally {
+    delete require.cache[helperPath];
+    fs.rmSync(isolatedRoot, { recursive: true, force: true });
+  }
+}
+
+async function runIsolatedClipboardRead(moduleSource) {
+  const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-clipboard-read-'));
+  const helperDir = path.join(isolatedRoot, 'lib');
+  const helperPath = path.join(helperDir, 'clipboard.js');
+
+  try {
+    fs.mkdirSync(helperDir, { recursive: true });
+    fs.copyFileSync(path.join(__dirname, '..', 'lib', 'clipboard.js'), helperPath);
+
+    if (moduleSource !== null) {
+      const moduleDir = path.join(isolatedRoot, 'node_modules', 'clipboardy');
+      fs.mkdirSync(moduleDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(moduleDir, 'package.json'),
+        JSON.stringify({
+          name: 'clipboardy',
+          version: '0.0.0',
+          main: 'index.js'
+        }),
+        'utf8'
+      );
+      fs.writeFileSync(path.join(moduleDir, 'index.js'), moduleSource, 'utf8');
+    }
+
+    const isolatedHelper = require(helperPath);
+    return await isolatedHelper.readFromClipboard();
   } finally {
     delete require.cache[helperPath];
     fs.rmSync(isolatedRoot, { recursive: true, force: true });
@@ -740,6 +774,83 @@ async function runTests() {
 
   const copied = await copyToClipboard(res1.resolvedPrompt);
   console.log(`  ✔ Clipboard fallbacks returned false without crashing (environment copy result: ${copied}).`);
+
+  // Test 4b: Clipboard reading for `done --from-clipboard`
+  console.log('\n▶ Test 4b: Safe Clipboard Read');
+  const missingRead = await runIsolatedClipboardRead(null);
+  assert.strictEqual(missingRead, null, 'Missing clipboard module should return null');
+
+  const unsupportedRead = await runIsolatedClipboardRead('module.exports = {};\n');
+  assert.strictEqual(unsupportedRead, null, 'Clipboard module without read methods should return null');
+
+  const syncRead = await runIsolatedClipboardRead(
+    'module.exports = { readSync: () => "# Step 1\\n\\nDatabase: PostgreSQL" };\n'
+  );
+  assert.strictEqual(syncRead, '# Step 1\n\nDatabase: PostgreSQL', 'readSync clipboard text must be returned');
+
+  const asyncRead = await runIsolatedClipboardRead('module.exports = { read: async () => "async clipboard text" };\n');
+  assert.strictEqual(asyncRead, 'async clipboard text', 'Async read clipboard text must be returned');
+
+  const emptyRead = await runIsolatedClipboardRead('module.exports = { readSync: () => "   " };\n');
+  assert.strictEqual(emptyRead, null, 'Blank clipboard text should return null');
+
+  const throwingRead = await runIsolatedClipboardRead(
+    'module.exports = { readSync: () => { throw new Error("no X server"); } };\n'
+  );
+  assert.strictEqual(throwingRead, null, 'Clipboard read errors must resolve to null');
+
+  const envRead = await readFromClipboard();
+  assert(
+    envRead === null || typeof envRead === 'string',
+    'readFromClipboard must resolve to a string or null without crashing'
+  );
+  console.log('  ✔ Clipboard reading falls back to null and returns text when available.');
+
+  // Test 4c: Heuristic decision parsing for `done --from-clipboard`
+  console.log('\n▶ Test 4c: Heuristic decision parsing');
+  const decisionText = [
+    '# Tech Stack Recommendation',
+    '',
+    '- **Database**: PostgreSQL',
+    '- Framework: Next.js 14',
+    'decisions.auth = NextAuth.js',
+    'Deployment Platform: "Vercel"',
+    'Some unrelated line: not a decision'
+  ].join('\n');
+  const parsed = parseDecisions(decisionText, [
+    'decisions.database',
+    'decisions.framework',
+    'decisions.auth',
+    'decisions.deploymentPlatform',
+    'decisions.missingKey'
+  ]);
+  assert.deepStrictEqual(parsed.found, {
+    'decisions.database': 'PostgreSQL',
+    'decisions.framework': 'Next.js 14',
+    'decisions.auth': 'NextAuth.js',
+    'decisions.deploymentPlatform': 'Vercel'
+  });
+  assert.deepStrictEqual(parsed.missing, ['decisions.missingKey']);
+
+  // Case-insensitive matching and value cleanup
+  const loose = parseDecisions('DATABASE: `postgres`\n\nAuth : bearer tokens', [
+    'decisions.database',
+    'decisions.auth'
+  ]);
+  assert.strictEqual(loose.found['decisions.database'], 'postgres', 'Backtick-wrapped values are cleaned');
+  assert.strictEqual(loose.found['decisions.auth'], 'bearer tokens', 'Spaced separators are tolerated');
+  assert.deepStrictEqual(loose.missing, []);
+
+  // Empty / non-string input reports every key as missing
+  for (const input of ['', '   ', null, undefined, 42]) {
+    const empty = parseDecisions(input, ['decisions.database']);
+    assert.deepStrictEqual(empty.found, {});
+    assert.deepStrictEqual(empty.missing, ['decisions.database']);
+  }
+
+  // Non-array write keys are treated as no keys
+  assert.deepStrictEqual(parseDecisions('Database: X', null), { found: {}, missing: [] });
+  console.log('  ✔ Heuristic decision parsing extracts values and reports missing keys.');
 
   // Test 5: Simulating Step 1 Completion (`done`)
   console.log('\n▶ Test 5: Simulating Step 1 Completion');
