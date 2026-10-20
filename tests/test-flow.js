@@ -655,25 +655,23 @@ async function runTests() {
   console.log('  ✔ Templates loaded successfully with dynamic step counts.');
 
   // Remote templates must fail in bounded time when the server stalls.
+  // loadRemoteTemplate follows redirects via fetch (see #141), so this test
+  // exercises the fetch-based path: a stalled fetch that rejects when its
+  // abort signal fires, and asserts the timeout still bounds the load.
   console.log('\n▶ Remote Template Timeout');
-  const https = require('https');
-  const originalHttpsGet = https.get;
   const originalSetTimeout = global.setTimeout;
   const originalClearTimeout = global.clearTimeout;
   let configuredTimeout;
-  let requestDestroyed = false;
-  let errorHandler;
-
-  https.get = () => ({
-    on(event, handler) {
-      if (event === 'error') errorHandler = handler;
-      return this;
-    },
-    destroy() {
-      requestDestroyed = true;
-      if (errorHandler) errorHandler(new Error('request timed out'));
-    }
-  });
+  let abortObserved = false;
+  const stalledFetch = (url, { signal } = {}) =>
+    new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        abortObserved = true;
+        const err = new Error('This operation was aborted');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    });
   global.setTimeout = (onTimeout, timeoutMs) => {
     configuredTimeout = timeoutMs;
     setImmediate(onTimeout);
@@ -684,7 +682,9 @@ async function runTests() {
   try {
     const didNotResolve = Symbol('did-not-resolve');
     const remoteTemplate = await Promise.race([
-      loadRemoteTemplate('https://example.test/stalled-template.json'),
+      loadRemoteTemplate('https://example.test/stalled-template.json', {
+        fetchImpl: stalledFetch
+      }),
       new Promise((resolve) => originalSetTimeout(() => resolve(didNotResolve), 100))
     ]);
     assert.notStrictEqual(
@@ -695,10 +695,9 @@ async function runTests() {
     assert.strictEqual(remoteTemplate, null, 'Timed-out remote template should fail to load');
     assert(configuredTimeout > 0, 'Remote request should configure a positive timeout');
     assert(configuredTimeout <= 10_000, 'Remote request timeout should remain short');
-    assert.strictEqual(requestDestroyed, true, 'Timed-out request should be destroyed');
+    assert.strictEqual(abortObserved, true, 'Timed-out request should be aborted');
     assert(getTemplate('web-app') !== null, 'Built-in templates should remain usable after a remote timeout');
   } finally {
-    https.get = originalHttpsGet;
     global.setTimeout = originalSetTimeout;
     global.clearTimeout = originalClearTimeout;
   }
@@ -708,6 +707,11 @@ async function runTests() {
     if (req.url === '/interrupted.json') {
       res.writeHead(200, { 'Content-Length': 100, Connection: 'close' });
       res.end('{"title":');
+      return;
+    }
+    if (req.url === '/moved.json') {
+      res.writeHead(302, { location: '/valid.json' });
+      res.end();
       return;
     }
     res.end(JSON.stringify({ title: 'Remote template', steps: [{ id: 'step-1', prompt: 'test prompt' }] }));
@@ -729,6 +733,9 @@ async function runTests() {
     );
     const validRemote = await loadRemoteTemplate(`${remoteUrl}/valid.json`);
     assert.strictEqual(validRemote.title, 'Remote template', 'Later remote loads should still work');
+    const redirected = await loadRemoteTemplate(`${remoteUrl}/moved.json`);
+    assert(redirected !== null, 'A 302 redirect should be followed instead of failing (#141)');
+    assert.strictEqual(redirected.title, 'Remote template', 'Redirected template should load from the redirect target');
     assert(getTemplate('web-app') !== null, 'Built-in templates should remain usable after a disconnect');
   } finally {
     clearTimeout(disconnectDeadline);
