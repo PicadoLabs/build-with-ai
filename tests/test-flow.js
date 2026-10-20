@@ -1809,6 +1809,19 @@ async function runTests() {
   });
   assert.strictEqual(okData.length, 2, 'Successful fetch must return the registry entries');
 
+  // Malformed/null payloads must resolve to [] instead of throwing (#146)
+  for (const payload of [null, 'not-json', 42, {}, { templates: null }, { templates: 'x' }]) {
+    const result = await fetchRegistry({
+      fetchImpl: async () => ({ ok: true, json: async () => payload })
+    });
+    assert.deepStrictEqual(result, [], `Payload ${JSON.stringify(payload)} must resolve to []`);
+  }
+  const wrapped = await fetchRegistry({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ templates: sampleRegistry }) })
+  });
+  assert.strictEqual(wrapped.length, 2, '{ templates: [...] } payload must return the templates');
+  console.log('  ✔ Registry fetch tolerates null and malformed payloads.');
+
   await assert.rejects(
     fetchRegistry({ fetchImpl: async () => ({ ok: false, status: 404 }) }),
     (err) => err.status === 404,
