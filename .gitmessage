@@ -1,0 +1,26 @@
+# <type>(<scope>): <subject> (max 72 chars, imperative mood, lowercase, no period, NO EMOJIS)
+#
+# Allowed types:
+#   feat     - A new feature or capability
+#   fix      - A bug fix
+#   docs     - Documentation changes only
+#   style    - Code style/formatting changes (no logic changes)
+#   refactor - Code changes that neither fix a bug nor add a feature
+#   perf     - Performance improvements
+#   test     - Adding or correcting tests
+#   build    - Changes that affect the build system or external dependencies
+#   ci       - Changes to CI configuration files and scripts
+#   chore    - Other changes that do not modify src or test files
+#   revert   - Reverts a previous commit
+#
+# Scopes (optional): cli, state, templates, export, config, rules, tests
+#
+# Example:
+#   feat(export): add export rules support for editor configurations
+#
+# ----------------------------------------------------------------------
+# Detailed explanation of what was changed and why (wrap at 72 chars):
+
+# ----------------------------------------------------------------------
+# Issue reference (optional, e.g., Fixes #123, Closes #456):
+# Fixes #

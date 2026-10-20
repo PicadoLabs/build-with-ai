@@ -19,10 +19,11 @@
     "test": "node tests/test-flow.js",
     "test:e2e": "node tests/e2e-test.js",
     "test:all": "node tests/test-flow.js && node tests/e2e-test.js",
-    "lint": "eslint \"{bin,lib,tests}/**/*.js\"",
-    "lint:fix": "eslint \"{bin,lib,tests}/**/*.js\" --fix",
-    "format": "prettier --write \"{bin,lib,tests}/**/*.js\"",
-    "format:check": "prettier --check \"{bin,lib,tests}/**/*.js\""
+    "lint": "eslint \"{bin,lib,tests,.github/scripts}/**/*.js\"",
+    "lint:fix": "eslint \"{bin,lib,tests,.github/scripts}/**/*.js\" --fix",
+    "format": "prettier --write \"{bin,lib,tests,.github/scripts}/**/*.js\"",
+    "format:check": "prettier --check \"{bin,lib,tests,.github/scripts}/**/*.js\"",
+    "prepare": "git config core.hooksPath .githooks || exit 0"
   },
   "repository": {
     "type": "git",

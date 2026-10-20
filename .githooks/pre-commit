@@ -1,0 +1,25 @@
+#!/usr/bin/env sh
+# Zero-dependency pre-commit hook for build-with-ai
+
+echo "Running pre-commit quality checks..."
+
+# 1. Check formatting
+npm run format:check
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "Pre-commit check failed: Code formatting issues detected."
+  echo "Run 'npm run format' to automatically fix formatting issues."
+  exit 1
+fi
+
+# 2. Check linting
+npm run lint
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "Pre-commit check failed: ESLint errors detected."
+  echo "Run 'npm run lint:fix' to resolve autofixable lint issues."
+  exit 1
+fi
+
+echo "Pre-commit checks passed successfully."
+exit 0

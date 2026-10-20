@@ -1,50 +1,158 @@
 # Contributing to build-with-ai
 
-Thank you for your interest in contributing to **build-with-ai**! A terminal workflow CLI that guides you through building apps step-by-step with your favorite AI web interfaces.
+Thank you for your interest in contributing to **build-with-ai**! A minimal, zero-API terminal workflow CLI that guides developers through building software step-by-step with any AI web interface or assistant.
 
-build-with-ai is maintained under the **PicadoLabs** organization ([https://github.com/PicadoLabs](https://github.com/PicadoLabs)).
+build-with-ai is maintained under the **PicadoLabs** organization (https://github.com/PicadoLabs).
 
 ---
 
 ## Table of Contents
 1. [Code of Conduct](#1-code-of-conduct)
-2. [Prerequisites](#2-prerequisites)
-3. [Local Setup & Installation](#3-local-setup--installation)
-4. [Testing & Quality Verification](#4-testing--quality-verification)
-5. [Submitting Pull Requests](#5-submitting-pull-requests)
-6. [Template Authoring Guide](#6-template-authoring-guide)
+2. [Design Principles](#2-design-principles)
+3. [Prerequisites & Local Setup](#3-prerequisites--local-setup)
+4. [Verification & Quality Commands](#4-verification--quality-commands)
+5. [Commit Message Standards (Conventional Commits)](#5-commit-message-standards-conventional-commits)
+6. [Submitting Pull Requests](#6-submitting-pull-requests)
+7. [Template Authoring Guide](#7-template-authoring-guide)
+8. [Strict No-Emoji Policy](#8-strict-no-emoji-policy)
 
 ---
 
 ## 1. Code of Conduct
-All contributors and maintainers are expected to adhere to the [Code of Conduct](CODE_OF_CONDUCT.md). Please report unacceptable behavior to [picadolabs@gmail.com](mailto:picadolabs@gmail.com).
+All contributors and maintainers are expected to adhere to professional open-source standards and maintain a respectful, welcoming environment. Please report unacceptable behavior to picadolabs@gmail.com.
 
-## 2. Prerequisites
-- Node.js 16+
+---
 
-## 3. Local Setup & Installation
-1. Clone the repo.
-2. `cd build-with-ai`
-3. `npm install`
-4. `npm link` (optional, to test CLI locally)
+## 2. Design Principles
+- **Zero API Keys**: The CLI operates completely without requiring external API keys, third-party cloud connections, or billable model endpoints.
+- **Local & Branch-Scoped State**: Project decisions and step progress remain on the developer's machine inside `.buildwithai/` and adapt cleanly across git branches.
+- **Copy-Paste First**: Step prompts are formatted cleanly and copied directly to the system clipboard for immediate paste into any AI chat interface (ChatGPT, Claude, Gemini, DeepSeek, local LLMs).
+- **Deterministic & Backward Compatible**: CLI state and template parsing must remain reliable and never introduce breaking schema changes to existing `.buildwithai/` folders.
 
-## 4. Testing & Quality Verification
-Before submitting a pull request, ensure all tests pass:
-`npm test` or `npm run test:all`
+---
 
-## 5. Submitting Pull Requests
-1. Fork the repository.
-2. Create a feature branch (`git checkout -b feature/my-new-feature`).
-3. Commit your changes (`git commit -am 'Add some feature'`).
-4. Push to the branch (`git push origin feature/my-new-feature`).
-5. Create a new Pull Request.
+## 3. Prerequisites & Local Setup
+- **Node.js**: Node 18 LTS or newer (tested against Node 18.x, 20.x, and 22.x).
+- **npm**: npm 8 or newer.
+- **Git**: Installed and configured.
 
-## 6. Template Authoring Guide
+### Quick Start
+```bash
+# 1. Clone your fork
+git clone https://github.com/<your-username>/build-with-ai.git
+cd build-with-ai
 
-Templates are the core of `build-with-ai`, guiding the zero-API state machine. When creating or modifying templates in the `templates/` directory, please adhere to the following rules:
+# 2. Install dependencies (automatically activates local git hooks via prepare script)
+npm ci
+
+# 3. Configure the commit message template (recommended)
+git config commit.template .gitmessage
+
+# 4. Optional: Link the CLI globally for manual testing
+npm link
+```
+
+### Local Git Hooks
+This repository provides zero-dependency git hooks inside `.githooks/`:
+- `pre-commit`: Automatically runs `npm run format:check` and `npm run lint` before committing.
+- `commit-msg`: Validates that the commit message conforms to Conventional Commits and contains zero emojis.
+
+Hooks are activated automatically on `npm ci` or `npm install`. You can manually re-enable them anytime with:
+```bash
+npm run prepare
+```
+
+---
+
+## 4. Verification & Quality Commands
+Every pull request must pass all quality checks prior to review. Run these commands locally before submitting changes:
+
+```bash
+# Check code formatting (Prettier)
+npm run format:check
+
+# Automatically fix code formatting discrepancies
+npm run format
+
+# Run ESLint static analysis
+npm run lint
+
+# Automatically fix autofixable ESLint issues
+npm run lint:fix
+
+# Run unit tests
+npm test
+
+# Run the complete end-to-end beginner verification suite
+npm run test:e2e
+
+# Run all test suites in sequence
+npm run test:all
+```
+
+---
+
+## 5. Commit Message Standards (Conventional Commits)
+We enforce the Conventional Commits specification across all commits and PR titles.
+
+### Commit Format
+```text
+<type>(<scope>): <subject>
+```
+
+- **Type** (required): Must be in lowercase.
+- **Scope** (optional): Noun describing the subsystem affected, enclosed in parentheses (e.g., `cli`, `state`, `templates`, `export`, `config`, `rules`, `tests`).
+- **Subject** (required): Imperative mood, lowercase, no ending period, maximum 72 characters, **no emojis**.
+
+### Allowed Types
+| Type | Description |
+| :--- | :--- |
+| `feat` | Adds a new feature or CLI command |
+| `fix` | Fixes a bug or resolves an edge-case failure |
+| `docs` | Documentation updates (README, guides, comments) |
+| `style` | Formatting or styling changes that do not affect code logic |
+| `refactor` | Code reorganization without changing external behavior or API |
+| `perf` | Changes that improve execution or memory performance |
+| `test` | Adding missing tests or refactoring test suites |
+| `build` | Changes to build processes, packaging, or npm dependencies |
+| `ci` | Changes to GitHub Actions workflows or automated scripts |
+| `chore` | Maintenance tasks, gitignore updates, auxiliary scripts |
+| `revert` | Reverts a previous commit |
+
+### Good Commit Examples
+- `feat(export): add export rules command for cursor and copilot`
+- `fix(undo): handle empty history directory gracefully`
+- `docs: update template authoring guide in contributing guide`
+- `ci: add e2e test verification step to workflow`
+
+### Bad Commit Examples
+- `Fixed stuff` (missing type, capitalized, vague)
+- `feat: [emoji] add fancy new spinner` (violates strict no-emoji policy)
+- `Update README.md` (missing conventional type prefix)
+
+---
+
+## 6. Submitting Pull Requests
+1. **Create a branch**:
+   Use descriptive branch names:
+   - `feature/export-rules`
+   - `fix/undo-empty-history`
+   - `docs/contributing-guide`
+2. **Make focused changes**:
+   Keep commits modular and self-contained with conventional commit messages.
+3. **Run local verification**:
+   Ensure `npm run format:check`, `npm run lint`, and `npm run test:all` all pass cleanly.
+4. **Push and open a PR**:
+   - Give the PR a Conventional Commit title (e.g., `feat(export): add rule synchronization`).
+   - Fill out all sections in the PR template (`.github/pull_request_template.md`).
+   - Link the relevant issue (e.g., `Fixes #125`).
+
+---
+
+## 7. Template Authoring Guide
+Templates define guided workflows in the `templates/` directory.
 
 ### Template JSON Schema
-A template is a JSON file conforming to a specific structure. The standard structure is:
 ```json
 {
   "name": "Template Name",
@@ -61,20 +169,19 @@ A template is a JSON file conforming to a specific structure. The standard struc
 ```
 
 ### Context Contracts (`requires` and `writes`)
-Templates run linearly and pass data using a context object. 
-- **`requires`**: An array of context keys the step needs to function properly. The prompt will only execute if these keys exist in the context state.
-- **`writes`**: An array of keys this step expects the user or subsequent state parsing to fulfill. 
+- **`requires`**: Context keys mandatory for the step to execute. If missing, the CLI warns the user and inserts visible fallback placeholders.
+- **`writes`**: Context keys this step saves into `context.json`.
 
 ### Interpolation Placeholders
-You can inject context values dynamically into the prompts using double curly brace syntax. 
-For example: `{{project.name}}` or `{{decisions.framework}}`. Ensure that any variable you interpolate is guaranteed to exist (e.g., via previous `writes` or the initial project setup).
+Use double curly brace syntax (e.g. `{{project.name}}` or `{{decisions.framework}}`).
 
-### Validation and Testing
-When adding a new template, you must ensure it does not break the core CLI. Run the full test suite locally before opening a pull request:
-```bash
-npm run test:all
-```
-If your template introduces new context keys, ensure they do not conflict with core system variables.
+---
 
-### Strict No-Emoji Rule
-We strictly follow a maintainer OSS standard. **Do not use emojis** in template descriptions, prompt text, or inside this repository's codebase and documentation. Keep the tone clean, professional, and entirely text-based.
+## 8. Strict No-Emoji Policy
+We enforce a strict **no-emoji policy** across this repository:
+- No emojis in source code or CLI terminal outputs.
+- No emojis in commit messages or pull request titles.
+- No emojis in documentation, templates, or markdown files.
+- No emojis in GitHub issue comments or review notes.
+
+Keep all communication, code, and documentation clean, professional, and accessible.

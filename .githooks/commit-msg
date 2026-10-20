@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Zero-dependency commit-msg hook for build-with-ai
+
+node .github/scripts/validate-commit-msg.js "$1"
