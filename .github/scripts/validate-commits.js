@@ -12,14 +12,14 @@ const targetRef = `origin/${baseRef}`;
 
 let commitLogOutput = '';
 try {
-  commitLogOutput = execSync(`git log --format="%H%x09%s" ${targetRef}..HEAD`, {
+  commitLogOutput = execSync(`git log --no-merges --format="%H%x09%s" ${targetRef}..HEAD`, {
     encoding: 'utf8',
     stdio: ['pipe', 'pipe', 'ignore']
   }).trim();
 } catch {
   // If targetRef is not directly available, fallback to HEAD~1..HEAD or HEAD
   try {
-    commitLogOutput = execSync('git log -n 10 --format="%H%x09%s"', {
+    commitLogOutput = execSync('git log --no-merges -n 10 --format="%H%x09%s"', {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'ignore']
     }).trim();
@@ -49,8 +49,8 @@ for (const line of lines) {
   if (!subject) continue;
 
   // Skip merge commits
-  if (subject.startsWith('Merge branch') || subject.startsWith('Merge pull request')) {
-    console.log(`  [skip] ${shortHash} ${subject} (merge commit)`);
+  if (subject.startsWith('Merge ') || subject.startsWith('Revert ')) {
+    console.log(`  [skip] ${shortHash} ${subject} (merge/revert commit)`);
     continue;
   }
 
