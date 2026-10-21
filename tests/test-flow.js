@@ -1,0 +1,2260 @@
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const http = require('http');
+const { execSync } = require('child_process');
+const {
+  isInitialized,
+  initState,
+  loadState,
+  saveState,
+  loadContext,
+  saveContext,
+  saveHistory,
+  loadHistory,
+  getAllHistory,
+  resetProject,
+  getStorageDir,
+  isBranchScopedEnabled,
+  getCurrentGitBranch,
+  sanitizeBranchName,
+  getSnapshotsDir,
+  saveSnapshot,
+  loadSnapshot,
+  listSnapshots,
+  deleteSnapshot,
+  undoLastStep
+} = require('../lib/state');
+
+const {
+  loadTemplates,
+  loadRemoteTemplate,
+  getTemplate,
+  resolveStepPrompt,
+  buildArchitecturalContract
+} = require('../lib/promptEngine');
+
+const { resolveModel, DEFAULT_MODEL_MAPPINGS, getMappings } = require('../lib/models');
+
+const { fetchRegistry, filterTemplates } = require('../lib/registry');
+
+const { getByPath, setByPath, flattenObject } = require('../lib/contextBuilder');
+
+const { parseEditorValue, formatEditorValue, summarizeValue, runConfigEditor } = require('../lib/configEditor');
+
+const { runExport, resolveReadmePath } = require('../lib/export');
+
+const {
+  runRulesExport,
+  mergeRulesFile,
+  getRuleFilePaths,
+  RULES_BLOCK_START,
+  RULES_BLOCK_END
+} = require('../lib/rules');
+
+const { copyToClipboard, readFromClipboard } = require('../lib/clipboard');
+
+const { parseDecisions } = require('../lib/decisionParser');
+
+const { validateTemplate } = require('../lib/validator');
+
+const { findMissingTargetFiles, printTargetFileTips, getGitChangedFiles } = require('../lib/ui');
+
+async function runIsolatedClipboardFallback(moduleSource) {
+  const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-clipboard-'));
+  const helperDir = path.join(isolatedRoot, 'lib');
+  const helperPath = path.join(helperDir, 'clipboard.js');
+
+  try {
+    fs.mkdirSync(helperDir, { recursive: true });
+    fs.copyFileSync(path.join(__dirname, '..', 'lib', 'clipboard.js'), helperPath);
+
+    if (moduleSource !== null) {
+      const moduleDir = path.join(isolatedRoot, 'node_modules', 'clipboardy');
+      fs.mkdirSync(moduleDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(moduleDir, 'package.json'),
+        JSON.stringify({
+          name: 'clipboardy',
+          version: '0.0.0',
+          main: 'index.js'
+        }),
+        'utf8'
+      );
+      fs.writeFileSync(path.join(moduleDir, 'index.js'), moduleSource, 'utf8');
+    }
+
+    const isolatedHelper = require(helperPath);
+    return await isolatedHelper.copyToClipboard('fallback test');
+  } finally {
+    delete require.cache[helperPath];
+    fs.rmSync(isolatedRoot, { recursive: true, force: true });
+  }
+}
+
+async function runIsolatedClipboardRead(moduleSource) {
+  const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-clipboard-read-'));
+  const helperDir = path.join(isolatedRoot, 'lib');
+  const helperPath = path.join(helperDir, 'clipboard.js');
+
+  try {
+    fs.mkdirSync(helperDir, { recursive: true });
+    fs.copyFileSync(path.join(__dirname, '..', 'lib', 'clipboard.js'), helperPath);
+
+    if (moduleSource !== null) {
+      const moduleDir = path.join(isolatedRoot, 'node_modules', 'clipboardy');
+      fs.mkdirSync(moduleDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(moduleDir, 'package.json'),
+        JSON.stringify({
+          name: 'clipboardy',
+          version: '0.0.0',
+          main: 'index.js'
+        }),
+        'utf8'
+      );
+      fs.writeFileSync(path.join(moduleDir, 'index.js'), moduleSource, 'utf8');
+    }
+
+    const isolatedHelper = require(helperPath);
+    return await isolatedHelper.readFromClipboard();
+  } finally {
+    delete require.cache[helperPath];
+    fs.rmSync(isolatedRoot, { recursive: true, force: true });
+  }
+}
+
+async function runTests() {
+  console.log('▶ Test: Model Capability Aliasing');
+  assert.strictEqual(resolveModel('@reasoning'), DEFAULT_MODEL_MAPPINGS['@reasoning']);
+  assert.strictEqual(resolveModel('@standard'), DEFAULT_MODEL_MAPPINGS['@standard']);
+  assert.strictEqual(resolveModel('@fast'), DEFAULT_MODEL_MAPPINGS['@fast']);
+  assert.strictEqual(resolveModel('@local'), DEFAULT_MODEL_MAPPINGS['@local']);
+  assert.strictEqual(resolveModel('Claude 3.5 Sonnet'), 'Claude 3.5 Sonnet');
+  const testMappings = getMappings();
+  assert.strictEqual(typeof testMappings, 'object');
+  assert.ok(testMappings['@reasoning']);
+  console.log('  ✔ Model Capability Aliasing verified.');
+  const invalidStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-export-state-'));
+  try {
+    fs.mkdirSync(getStorageDir(invalidStateDir));
+    const statePath = path.join(getStorageDir(invalidStateDir), 'state.json');
+    const readmePath = path.join(invalidStateDir, 'README.md');
+    fs.writeFileSync(statePath, '{ invalid JSON', 'utf8');
+    fs.writeFileSync(readmePath, 'Existing documentation', 'utf8');
+    for (const args of [[], ['--dry-run'], ['--out-dir', 'new-output']]) {
+      const result = require('child_process').spawnSync(
+        process.execPath,
+        [path.join(__dirname, '..', 'bin', 'cli.js'), 'export', ...args],
+        { cwd: invalidStateDir, encoding: 'utf8', timeout: 10000 }
+      );
+      assert.ifError(result.error);
+      assert.strictEqual(result.status, 1, 'Unreadable state must fail export');
+      assert(result.stderr.includes('restore valid JSON from a backup'), 'Keep the recovery guidance');
+      assert(!result.stderr.includes('TypeError'), 'Do not crash after reporting unreadable state');
+      assert(!result.stdout.includes('Documentation exported successfully'));
+      assert.strictEqual(fs.readFileSync(readmePath, 'utf8'), 'Existing documentation');
+      assert.strictEqual(fs.readFileSync(statePath, 'utf8'), '{ invalid JSON');
+      assert(!fs.existsSync(path.join(invalidStateDir, 'new-output')));
+      assert(!fs.existsSync(path.join(invalidStateDir, 'BUILD_LOG.md')));
+      assert(!fs.existsSync(path.join(getStorageDir(invalidStateDir), 'CONTEXT.md')));
+    }
+  } finally {
+    fs.rmSync(invalidStateDir, { recursive: true, force: true });
+  }
+
+  const historyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-history-order-'));
+  try {
+    assert.deepStrictEqual(getAllHistory(historyDir), []);
+    for (const step of [100, 2, 20, 99, 101]) {
+      saveHistory(step, `Response for step ${step}`, historyDir);
+    }
+    const history = getAllHistory(historyDir);
+    assert.deepStrictEqual(
+      history.map((entry) => entry.step),
+      [2, 20, 99, 100, 101],
+      'History must stay in numeric order beyond two-digit step numbers'
+    );
+    for (const entry of history) {
+      assert.strictEqual(entry.content, `Response for step ${entry.step}`);
+      assert.strictEqual(entry.filename, `step-${String(entry.step).padStart(2, '0')}.md`);
+      assert(!Number.isNaN(Date.parse(entry.modifiedAt)));
+    }
+  } finally {
+    fs.rmSync(historyDir, { recursive: true, force: true });
+  }
+
+  const { spawnSync } = require('child_process');
+  const failedE2E = spawnSync(
+    process.execPath,
+    [
+      '-e',
+      `
+    require('child_process').execFileSync = () => {
+      throw new Error('Injected E2E command failure');
+    };
+    require(${JSON.stringify(path.join(__dirname, 'e2e-test.js'))});
+  `
+    ],
+    { encoding: 'utf8', timeout: 10000 }
+  );
+  assert.ifError(failedE2E.error);
+  assert(failedE2E.stderr.includes('Injected E2E command failure'), 'Exercise the E2E failure handler');
+  assert(failedE2E.stdout.includes('OVERALL STATUS: FAIL'), 'Retain the final failure summary');
+  assert.strictEqual(failedE2E.status, 1, 'Failed E2E runs must fail CI');
+
+  const atomicDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-atomic-'));
+  const originalWrite = fs.writeFileSync;
+  const originalRename = fs.renameSync;
+  try {
+    for (const [filename, save, load] of [
+      ['state.json', saveState, loadState],
+      ['context.json', saveContext, loadContext]
+    ]) {
+      save({ value: 'original' }, atomicDir);
+      const target = path.join(getStorageDir(atomicDir), filename);
+      const original = fs.readFileSync(target, 'utf8');
+      const stale = `${target}.tmp`;
+      originalWrite(stale, '{interrupted', 'utf8');
+      assert.strictEqual(load(atomicDir).value, 'original', 'Ignore incomplete temporary artifacts');
+      for (const failure of ['write', 'rename']) {
+        let attempted = false;
+        try {
+          if (failure === 'write') {
+            fs.writeFileSync = (file, ...args) => {
+              if (path.dirname(file) === path.dirname(target)) {
+                attempted = true;
+                originalWrite(file, '{partial', 'utf8');
+                throw new Error('simulated write failure');
+              }
+              return originalWrite(file, ...args);
+            };
+          } else {
+            fs.renameSync = (from, to) => {
+              attempted = true;
+              assert.strictEqual(to, target);
+              assert.strictEqual(path.dirname(from), path.dirname(to));
+              assert.strictEqual(JSON.parse(fs.readFileSync(from, 'utf8')).value, 'replacement');
+              throw new Error('simulated rename failure');
+            };
+          }
+          assert.throws(() => save({ value: 'replacement' }, atomicDir), /simulated/);
+          assert(attempted, 'Exercise the failing filesystem operation');
+        } finally {
+          fs.writeFileSync = originalWrite;
+          fs.renameSync = originalRename;
+        }
+        assert.strictEqual(fs.readFileSync(target, 'utf8'), original, 'Failed save preserves original bytes');
+        assert.deepStrictEqual(
+          fs.readdirSync(getStorageDir(atomicDir)).filter((file) => file.startsWith(filename)),
+          [filename, `${filename}.tmp`],
+          'Clean only the temporary file owned by this save'
+        );
+      }
+      save({ value: 'recovered' }, atomicDir);
+      assert.strictEqual(load(atomicDir).value, 'recovered', 'Save succeeds despite stale temporary artifacts');
+      assert.strictEqual(fs.readFileSync(stale, 'utf8'), '{interrupted');
+      const recovered = fs.readFileSync(target, 'utf8');
+      const circular = {};
+      circular.self = circular;
+      assert.throws(() => save(circular, atomicDir), /Unable to save/);
+      assert.strictEqual(fs.readFileSync(target, 'utf8'), recovered, 'Serialization errors preserve saved data');
+
+      const logger = require('../lib/logger');
+      const originalError = logger.error;
+      const messages = [];
+      try {
+        logger.error = (message) => messages.push(message);
+        originalWrite(target, '{invalid', 'utf8');
+        assert.deepStrictEqual(load(atomicDir), filename === 'state.json' ? null : {});
+        assert(
+          messages[0].includes(target) && messages[0].includes('restore valid JSON'),
+          'Corruption diagnostic identifies the file and recovery action'
+        );
+        assert.strictEqual(fs.readFileSync(target, 'utf8'), '{invalid', 'Reading does not alter corrupted data');
+      } finally {
+        logger.error = originalError;
+      }
+    }
+  } finally {
+    fs.writeFileSync = originalWrite;
+    fs.renameSync = originalRename;
+    fs.rmSync(atomicDir, { recursive: true, force: true });
+  }
+
+  // A transient lock on the destination (antivirus, search indexer, editor watcher) is common on Windows.
+  const retryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-retry-'));
+  const failRename = (code, message = `simulated ${code}`) => Object.assign(new Error(message), { code });
+  try {
+    for (const code of ['EPERM', 'EBUSY', 'EACCES']) {
+      let renames = 0;
+      try {
+        fs.renameSync = (from, to) => {
+          renames += 1;
+          if (renames < 3) throw failRename(code);
+          return originalRename(from, to);
+        };
+        saveState({ value: `after-${code}` }, retryDir);
+      } finally {
+        fs.renameSync = originalRename;
+      }
+      assert.strictEqual(renames, 3, `${code} is retried until the rename succeeds`);
+      assert.strictEqual(loadState(retryDir).value, `after-${code}`, `Save completes after a transient ${code}`);
+    }
+
+    saveState({ value: 'original' }, retryDir);
+    const retryTarget = path.join(getStorageDir(retryDir), 'state.json');
+    for (const [code, expectedAttempts] of [
+      ['EBUSY', 3],
+      ['ENOSPC', 1]
+    ]) {
+      let attempts = 0;
+      try {
+        fs.renameSync = () => {
+          attempts += 1;
+          throw failRename(code);
+        };
+        assert.throws(
+          () => saveState({ value: 'replacement' }, retryDir),
+          new RegExp(`Unable to save.*simulated ${code}`)
+        );
+      } finally {
+        fs.renameSync = originalRename;
+      }
+      assert.strictEqual(attempts, expectedAttempts, `${code} is attempted ${expectedAttempts} time(s) before failing`);
+      assert.strictEqual(loadState(retryDir).value, 'original', 'A save that gives up preserves the original');
+      assert.deepStrictEqual(
+        fs.readdirSync(getStorageDir(retryDir)).filter((file) => file.startsWith('state.json')),
+        [path.basename(retryTarget)],
+        'A save that gives up leaves no temporary file behind'
+      );
+    }
+  } finally {
+    fs.renameSync = originalRename;
+    fs.rmSync(retryDir, { recursive: true, force: true });
+  }
+  console.log('Atomic persistence tests passed.');
+
+  const { formatElapsedTime } = require('../lib/ui');
+  const metricsNow = Date.parse('2026-01-03T12:00:00Z');
+  for (const [minutes, expected] of [
+    [0, 'less than a minute'],
+    [1, '1 min'],
+    [2, '2 mins'],
+    [60, '1 hr'],
+    [85, '1 hr 25 mins'],
+    [120, '2 hrs'],
+    [1440, '1 day'],
+    [2880, '2 days'],
+    [-10, 'less than a minute']
+  ]) {
+    assert.strictEqual(formatElapsedTime(new Date(metricsNow - minutes * 60000).toISOString(), metricsNow), expected);
+  }
+  for (const value of [undefined, null, '', 'invalid', 0]) {
+    assert.strictEqual(formatElapsedTime(value, metricsNow), 'Unknown');
+  }
+
+  // UTF-8 detection and ASCII fallback glyphs in lib/ui.
+  console.log('\n\u25b6 Test: UTF-8 detection and ASCII fallback glyphs');
+  const uiPath = require.resolve('../lib/ui');
+  const stripAnsi = (text) => text.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '');
+  // Loads a fresh copy of lib/ui with overridden platform/env. The callback
+  // runs while the overrides are active because isUtf8Supported() reads
+  // process.platform/process.env at call time; SYMBOLS is frozen at require.
+  function withFreshUi({ platform, env }, fn) {
+    const savedEnv = process.env;
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    try {
+      process.env = { ...savedEnv };
+      for (const key of ['WT_SESSION', 'VSCODE_PID', 'TERM_PROGRAM', 'LANG']) {
+        delete process.env[key];
+      }
+      Object.assign(process.env, env || {});
+      Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+      delete require.cache[uiPath];
+      return fn(require(uiPath));
+    } finally {
+      process.env = savedEnv;
+      Object.defineProperty(process, 'platform', platformDescriptor);
+    }
+  }
+
+  // isUtf8Supported() logic: non-Windows always supports UTF-8.
+  for (const platform of ['linux', 'darwin']) {
+    withFreshUi({ platform }, (ui) => {
+      assert.strictEqual(ui.isUtf8Supported(), true, `${platform} must support UTF-8`);
+      assert.strictEqual(ui.SYMBOLS.block, '\u2588', `${platform} must use Unicode glyphs`);
+    });
+  }
+  // Plain legacy Windows CMD (no UTF-8 indicators) falls back to ASCII.
+  withFreshUi({ platform: 'win32' }, (ui) => {
+    assert.strictEqual(ui.isUtf8Supported(), false, 'Legacy CMD must not support UTF-8');
+    assert.strictEqual(ui.SYMBOLS.block, '=', 'Legacy CMD must use ASCII glyphs');
+    assert.strictEqual(ui.SYMBOLS.side, '|', 'Legacy CMD must use ASCII box sides');
+  });
+  // Each UTF-8 indicator re-enables Unicode glyphs on Windows.
+  for (const env of [
+    { WT_SESSION: '1' },
+    { TERM_PROGRAM: 'vscode' },
+    { VSCODE_PID: '1234' },
+    { LANG: 'en_US.UTF-8' }
+  ]) {
+    withFreshUi({ platform: 'win32', env }, (ui) => {
+      assert.strictEqual(ui.isUtf8Supported(), true, `win32 with ${JSON.stringify(env)} must support UTF-8`);
+      assert.strictEqual(ui.SYMBOLS.block, '\u2588', 'UTF-8-capable Windows must use Unicode glyphs');
+    });
+  }
+
+  // renderProgressBar: Unicode vs ASCII fallback rendering (SYMBOLS is frozen at require).
+  const unicodeBar = withFreshUi({ platform: 'linux' }, (ui) => stripAnsi(ui.renderProgressBar(5, 10)));
+  assert(unicodeBar.includes('\u2588'), 'UTF-8 bar must use block glyphs');
+  assert(unicodeBar.includes('\u2591'), 'UTF-8 bar must use shade glyphs');
+  assert(!unicodeBar.includes('='), 'UTF-8 bar must not use ASCII fallbacks');
+  assert(unicodeBar.includes('50%'), 'Bar must show the completion percentage');
+  assert(unicodeBar.includes('(5/10 steps)'), 'Bar must show the step counts');
+
+  const asciiBar = withFreshUi({ platform: 'win32' }, (ui) => stripAnsi(ui.renderProgressBar(5, 10)));
+  assert(asciiBar.includes('='), 'ASCII bar must use = for filled blocks');
+  assert(asciiBar.includes('-'), 'ASCII bar must use - for empty blocks');
+  assert(!asciiBar.includes('\u2588'), 'ASCII bar must not use Unicode glyphs');
+  assert(!asciiBar.includes('\u2591'), 'ASCII bar must not use Unicode shade glyphs');
+  assert(asciiBar.includes('50%'), 'ASCII bar must still show the completion percentage');
+
+  // Both variants keep the same bar geometry.
+  for (const platform of ['linux', 'win32']) {
+    withFreshUi({ platform }, (ui) => {
+      assert.strictEqual(stripAnsi(ui.renderProgressBar(0, 0)), '[                    ] 0%');
+      const full = stripAnsi(ui.renderProgressBar(10, 10));
+      const expectedFill = platform === 'win32' ? '='.repeat(25) : '\u2588'.repeat(25);
+      assert(full.includes(expectedFill), 'Full bar must fill all 25 cells');
+    });
+  }
+  console.log('  \u2714 UTF-8 detection and ASCII fallback glyphs verified.');
+
+  // Context paths: preserve existing dot-separator semantics and value types.
+  const deepContext = {};
+  setByPath(deepContext, 'decisions.auth.oauth.providers.google.clientId', 'client-123');
+  assert.deepStrictEqual(deepContext, {
+    decisions: { auth: { oauth: { providers: { google: { clientId: 'client-123' } } } } }
+  });
+  assert.strictEqual(getByPath(deepContext, 'decisions.auth.oauth.providers.google.clientId'), 'client-123');
+  assert.strictEqual(getByPath(deepContext, 'decisions.auth.oauth.providers.missing.clientId'), undefined);
+
+  for (const parent of [undefined, null, 'old', 42, false]) {
+    const nested = { decisions: { auth: parent, database: 'SQLite' } };
+    setByPath(nested, 'decisions.auth.clientId', 'new');
+    assert.deepStrictEqual(nested, { decisions: { auth: { clientId: 'new' }, database: 'SQLite' } });
+  }
+  for (const value of ['', false, 0, null]) {
+    const nested = {};
+    setByPath(nested, 'decisions.value', value);
+    assert.strictEqual(getByPath(nested, 'decisions.value'), value);
+    assert.deepStrictEqual(flattenObject(nested), { 'decisions.value': value });
+  }
+
+  const specialKeys = { 'a.b': 'literal', a: { b: 'nested' } };
+  assert.strictEqual(getByPath(specialKeys, 'a.b'), 'nested', 'Dots are path separators, not literal key lookups');
+  setByPath(specialKeys, 'a.b', 'updated');
+  assert.deepStrictEqual(specialKeys, { 'a.b': 'literal', a: { b: 'updated' } });
+  setByPath(specialKeys, ' settings.oauth-provider.client_id@prod ', 'key');
+  assert.strictEqual(getByPath(specialKeys, ' settings.oauth-provider.client_id@prod '), 'key');
+  assert.deepStrictEqual(flattenObject({ 'a.b': 'literal' }), { 'a.b': 'literal' });
+
+  const arrayValue = [{ enabled: false }, ['nested', 0]];
+  const flattenInput = { decisions: { options: { retries: 0 }, providers: arrayValue, empty: {} } };
+  assert.deepStrictEqual(flattenObject(flattenInput), {
+    'decisions.options.retries': 0,
+    'decisions.providers': [{ enabled: false }, ['nested', 0]]
+  });
+  assert.strictEqual(flattenObject(flattenInput)['decisions.providers'], arrayValue, 'Nested arrays remain intact');
+  assert.deepStrictEqual(flattenObject({ options: { enabled: false } }, 'project'), {
+    'project.options.enabled': false
+  });
+  assert.deepStrictEqual(
+    flattenInput,
+    {
+      decisions: { options: { retries: 0 }, providers: [{ enabled: false }, ['nested', 0]], empty: {} }
+    },
+    'Flattening does not mutate its input'
+  );
+  for (const emptyInput of [null, undefined, '', 0, false, {}]) {
+    assert.deepStrictEqual(flattenObject(emptyInput), {});
+  }
+  assert.strictEqual(getByPath({ decisions: null }, 'decisions.auth'), undefined);
+  assert.strictEqual(getByPath({}, ''), undefined);
+  const unchanged = { name: 'project' };
+  setByPath(unchanged, '', 'ignored');
+  assert.deepStrictEqual(unchanged, { name: 'project' });
+
+  // Context paths: prototype-affecting segments are rejected and never reach Object.prototype.
+  for (const unsafePath of [
+    '__proto__.polluted',
+    'constructor.prototype.polluted',
+    'prototype.polluted',
+    'decisions.__proto__.polluted',
+    'decisions.constructor.prototype.polluted',
+    ' __proto__.polluted ',
+    '__proto__',
+    'constructor',
+    'prototype'
+  ]) {
+    const target = { decisions: { database: 'SQLite' } };
+    setByPath(target, unsafePath, 'yes');
+    assert.strictEqual({}.polluted, undefined, `setByPath(${unsafePath}) must not pollute Object.prototype`);
+    assert.deepStrictEqual(
+      target,
+      { decisions: { database: 'SQLite' } },
+      `setByPath(${unsafePath}) must leave the object unchanged`
+    );
+    assert.strictEqual(getByPath(target, unsafePath), undefined, `getByPath(${unsafePath}) must return undefined`);
+  }
+  assert.strictEqual(getByPath({}, 'constructor.name'), undefined);
+  assert.strictEqual(getByPath({ decisions: {} }, 'decisions.__proto__'), undefined);
+  const lookalikeKeys = {};
+  setByPath(lookalikeKeys, 'decisions.constructorType.prototypeName', 'ok');
+  assert.deepStrictEqual(lookalikeKeys, { decisions: { constructorType: { prototypeName: 'ok' } } });
+  assert.strictEqual(getByPath(lookalikeKeys, 'decisions.constructorType.prototypeName'), 'ok');
+  // setByPath reports whether it stored the value, so callers can tell the user when it did not
+  assert.strictEqual(setByPath({}, 'decisions.database', 'SQLite'), true);
+  for (const rejected of ['__proto__.polluted', 'decisions.constructor.prototype.x', '']) {
+    assert.strictEqual(
+      setByPath({}, rejected, 'yes'),
+      false,
+      `setByPath(${JSON.stringify(rejected)}) reports a rejection`
+    );
+  }
+  assert.strictEqual(setByPath(null, 'decisions.database', 'SQLite'), false);
+  console.log('Context path edge cases passed.');
+
+  const remoteData = { type: 'remote-test', title: 'Remote test', steps: [{ id: 'first', prompt: 'test prompt' }] };
+  const responses = [
+    { status: 200, body: JSON.stringify(remoteData), valid: true },
+    { status: 201, body: JSON.stringify(remoteData), valid: true },
+    { status: 404, body: JSON.stringify(remoteData) },
+    { status: 500, body: JSON.stringify(remoteData) },
+    { status: 302, body: JSON.stringify(remoteData) },
+    { status: 204, body: '' },
+    { status: 200, body: '' },
+    { status: 200, body: '   ' },
+    { status: 200, body: '{broken' }
+  ];
+  const server = http.createServer((req, res) => {
+    const response = responses[Number(req.url.slice(1).split('?')[0].replace('.json', ''))];
+    res.writeHead(response.status, { 'Content-Type': 'application/json', Connection: 'close' });
+    res.end(response.body);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  try {
+    for (const [index, response] of responses.entries()) {
+      const result = await loadRemoteTemplate(`http://127.0.0.1:${server.address().port}/${index}.json`);
+      if (response.valid) {
+        assert.deepStrictEqual(result, {
+          id: String(index),
+          ...remoteData,
+          description: '',
+          stepCount: 1
+        });
+      } else {
+        assert.strictEqual(
+          result,
+          null,
+          `HTTP ${response.status} with body ${JSON.stringify(response.body)} must fail to load`
+        );
+      }
+    }
+    // The template id comes from the URL path only; query strings and fragments must not leak into it.
+    for (const [suffix, expectedId] of [
+      ['0.json?raw=true', '0'],
+      ['0.json#section', '0'],
+      ['0.json?raw=true#section', '0'],
+      ['0.json?token=a/b.json', '0'],
+      ['', 'custom'],
+      ['?raw=true', 'custom']
+    ]) {
+      const result = await loadRemoteTemplate(`http://127.0.0.1:${server.address().port}/${suffix}`);
+      assert(result, `Remote template with URL suffix "${suffix}" must load`);
+      assert.strictEqual(result.id, expectedId, `URL suffix "${suffix}" must produce id "${expectedId}"`);
+    }
+    assert(getTemplate('web-app'), 'Local templates remain available after failed remote loads');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+  console.log('🧪 Starting build-with-ai Test Suite...\n');
+
+  // Test 1: Template Loading & Verification
+  console.log('▶ Test 1: Templates Loading');
+  const templates = loadTemplates();
+  assert(templates.length >= 2, 'Should load at least 2 templates');
+  assert(
+    !templates.some((t) => t.id === 'index'),
+    'templates/index.json is a registry file and must not load as a template'
+  );
+
+  const webAppTemplate = getTemplate('web-app');
+  assert(webAppTemplate !== null, 'web-app template must exist');
+  assert(webAppTemplate.stepCount >= 20, `web-app template should have >= 20 steps, found ${webAppTemplate.stepCount}`);
+  assert(webAppTemplate.steps[0].id === 'step-01-discovery', 'Step 1 should be discovery');
+  assert(Array.isArray(webAppTemplate.steps[0].requires), 'Step 1 requires must be array');
+  assert(Array.isArray(webAppTemplate.steps[0].writes), 'Step 1 writes must be array');
+
+  const flutterAppTemplate = getTemplate('flutter-app');
+  assert(flutterAppTemplate !== null, 'flutter-app template must exist');
+  assert(
+    flutterAppTemplate.stepCount >= 10 && flutterAppTemplate.stepCount <= 20,
+    `flutter-app template should have 10-20 steps, found ${flutterAppTemplate.stepCount}`
+  );
+  assert(flutterAppTemplate.steps[0].id === 'step-01-discovery', 'Flutter Step 1 should be discovery');
+  assert(Array.isArray(flutterAppTemplate.steps[0].requires), 'Flutter Step 1 requires must be array');
+  assert(Array.isArray(flutterAppTemplate.steps[0].writes), 'Flutter Step 1 writes must be array');
+
+  const discordBotTemplate = getTemplate('discord-bot');
+  assert(discordBotTemplate !== null, 'discord-bot template must exist');
+  assert(
+    discordBotTemplate.stepCount >= 10 && discordBotTemplate.stepCount <= 20,
+    `discord-bot template should have 10-20 steps, found ${discordBotTemplate.stepCount}`
+  );
+  assert(discordBotTemplate.steps[0].id === 'step-01-bot-purpose', 'Discord bot Step 1 should be bot purpose');
+  assert(Array.isArray(discordBotTemplate.steps[0].requires), 'Discord bot Step 1 requires must be array');
+  assert(Array.isArray(discordBotTemplate.steps[0].writes), 'Discord bot Step 1 writes must be array');
+
+  const discordStep1 = discordBotTemplate.steps[0];
+  const discordContext = { project: { name: 'ChaiBot', idea: 'A news and debate bot.', experienceLevel: 'Beginner' } };
+  const discordRes1 = resolveStepPrompt(discordStep1, discordContext);
+  assert(discordRes1.resolvedPrompt.includes('ChaiBot'), 'Discord bot Step 1 prompt must resolve project.name');
+  assert(
+    discordRes1.warnings.length === 0,
+    'Discord bot Step 1 should resolve with no warnings given project.* context'
+  );
+
+  const aiOrchestration = getTemplate('ai-orchestration');
+  assert(aiOrchestration !== null, 'ai-orchestration template must exist');
+  assert.strictEqual(aiOrchestration.stepCount, 14, 'ai-orchestration template should have exactly 14 steps');
+  assert.strictEqual(
+    aiOrchestration.steps[0].id,
+    'step-01-system-objective',
+    'AI Orchestration Step 1 should be system objective'
+  );
+  assert(Array.isArray(aiOrchestration.steps[0].requires), 'AI Orchestration Step 1 requires must be array');
+
+  const aiOrchStep1 = aiOrchestration.steps[0];
+  const aiOrchContext = {
+    project: { name: 'AutoDev', idea: 'Autonomous software developer crew', experienceLevel: 'Advanced' }
+  };
+  const aiOrchRes1 = resolveStepPrompt(aiOrchStep1, aiOrchContext);
+  assert(aiOrchRes1.resolvedPrompt.includes('AutoDev'), 'AI Orchestration Step 1 prompt must resolve project.name');
+  assert.strictEqual(
+    aiOrchRes1.warnings.length,
+    0,
+    'AI Orchestration Step 1 should resolve with no warnings given project.* context'
+  );
+
+  console.log('  ✔ Templates loaded successfully with dynamic step counts.');
+
+  // Remote templates must fail in bounded time when the server stalls.
+  console.log('\n▶ Remote Template Timeout');
+  const https = require('https');
+  const originalHttpsGet = https.get;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  let configuredTimeout;
+  let requestDestroyed = false;
+  let errorHandler;
+
+  https.get = () => ({
+    on(event, handler) {
+      if (event === 'error') errorHandler = handler;
+      return this;
+    },
+    destroy() {
+      requestDestroyed = true;
+      if (errorHandler) errorHandler(new Error('request timed out'));
+    }
+  });
+  global.setTimeout = (onTimeout, timeoutMs) => {
+    configuredTimeout = timeoutMs;
+    setImmediate(onTimeout);
+    return 1;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    const didNotResolve = Symbol('did-not-resolve');
+    const remoteTemplate = await Promise.race([
+      loadRemoteTemplate('https://example.test/stalled-template.json'),
+      new Promise((resolve) => originalSetTimeout(() => resolve(didNotResolve), 100))
+    ]);
+    assert.notStrictEqual(
+      remoteTemplate,
+      didNotResolve,
+      'Stalled request should resolve within its configured timeout'
+    );
+    assert.strictEqual(remoteTemplate, null, 'Timed-out remote template should fail to load');
+    assert(configuredTimeout > 0, 'Remote request should configure a positive timeout');
+    assert(configuredTimeout <= 10_000, 'Remote request timeout should remain short');
+    assert.strictEqual(requestDestroyed, true, 'Timed-out request should be destroyed');
+    assert(getTemplate('web-app') !== null, 'Built-in templates should remain usable after a remote timeout');
+  } finally {
+    https.get = originalHttpsGet;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+  console.log('  ✔ Stalled remote template fails cleanly without blocking local templates.');
+
+  const remoteServer = http.createServer((req, res) => {
+    if (req.url === '/interrupted.json') {
+      res.writeHead(200, { 'Content-Length': 100, Connection: 'close' });
+      res.end('{"title":');
+      return;
+    }
+    res.end(JSON.stringify({ title: 'Remote template', steps: [{ id: 'step-1', prompt: 'test prompt' }] }));
+  });
+  await new Promise((resolve) => remoteServer.listen(0, '127.0.0.1', resolve));
+  let disconnectDeadline;
+  try {
+    const remoteUrl = `http://127.0.0.1:${remoteServer.address().port}`;
+    const interrupted = await Promise.race([
+      loadRemoteTemplate(`${remoteUrl}/interrupted.json`),
+      new Promise((resolve) => {
+        disconnectDeadline = setTimeout(() => resolve('still waiting'), 2000);
+      })
+    ]);
+    assert.strictEqual(
+      interrupted,
+      null,
+      'A disconnected response should fail promptly without waiting for the network timeout'
+    );
+    const validRemote = await loadRemoteTemplate(`${remoteUrl}/valid.json`);
+    assert.strictEqual(validRemote.title, 'Remote template', 'Later remote loads should still work');
+    assert(getTemplate('web-app') !== null, 'Built-in templates should remain usable after a disconnect');
+  } finally {
+    clearTimeout(disconnectDeadline);
+    await new Promise((resolve) => remoteServer.close(resolve));
+  }
+
+  // Create isolated temp workspace
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-test-'));
+  console.log(`\n▶ Test 2: State & Storage Management in ${tempDir}`);
+
+  assert.strictEqual(isInitialized(tempDir), false, 'Should not be initialized yet');
+
+  // Init project
+  const state = initState(
+    {
+      projectName: 'Expense Tracker',
+      templateId: 'web-app',
+      templateTitle: 'Full-Stack Web Application',
+      experienceLevel: 'Beginner',
+      projectIdea: 'A minimalist expense tracker for freelancers',
+      totalSteps: webAppTemplate.stepCount
+    },
+    tempDir
+  );
+
+  assert.strictEqual(isInitialized(tempDir), true, 'Should now be initialized');
+  assert.strictEqual(state.currentStep, 1, 'Current step should start at 1');
+  assert.strictEqual(state.completedSteps.length, 0, 'Completed steps should be empty');
+
+  // Check initial context
+  const context = loadContext(tempDir);
+  assert.strictEqual(context.project.name, 'Expense Tracker');
+  assert.strictEqual(context.project.type, 'web-app');
+  assert.strictEqual(context.project.experienceLevel, 'Beginner');
+  assert.strictEqual(context.project.idea, 'A minimalist expense tracker for freelancers');
+  console.log('  ✔ State and initial context initialized correctly.');
+
+  // Test 3: Prompt Engine Resolution for Step 1
+  console.log('\n▶ Test 3: Prompt Resolution for Step 1');
+  const step1 = webAppTemplate.steps[0];
+  const res1 = resolveStepPrompt(step1, context);
+  assert(res1.resolvedPrompt.includes('Expense Tracker'), 'Prompt must contain resolved project name');
+  assert(res1.resolvedPrompt.includes('Beginner'), 'Prompt must contain resolved experience level');
+  assert.strictEqual(res1.warnings.length, 0, 'Step 1 has all required keys in initial context');
+  console.log('  ✔ Step 1 prompt interpolated without warnings.');
+
+  // Test 4: Clipboard copying
+  console.log('\n▶ Test 4: Safe Clipboard Copy');
+  const missingClipboard = await runIsolatedClipboardFallback(null);
+  assert.strictEqual(missingClipboard, false, 'Missing clipboard module should return false');
+
+  const unsupportedClipboard = await runIsolatedClipboardFallback('module.exports = {};\n');
+  assert.strictEqual(unsupportedClipboard, false, 'Clipboard module without write methods should return false');
+
+  const copied = await copyToClipboard(res1.resolvedPrompt);
+  console.log(`  ✔ Clipboard fallbacks returned false without crashing (environment copy result: ${copied}).`);
+
+  // Test 4b: Clipboard reading for `done --from-clipboard`
+  console.log('\n▶ Test 4b: Safe Clipboard Read');
+  const missingRead = await runIsolatedClipboardRead(null);
+  assert.strictEqual(missingRead, null, 'Missing clipboard module should return null');
+
+  const unsupportedRead = await runIsolatedClipboardRead('module.exports = {};\n');
+  assert.strictEqual(unsupportedRead, null, 'Clipboard module without read methods should return null');
+
+  const syncRead = await runIsolatedClipboardRead(
+    'module.exports = { readSync: () => "# Step 1\\n\\nDatabase: PostgreSQL" };\n'
+  );
+  assert.strictEqual(syncRead, '# Step 1\n\nDatabase: PostgreSQL', 'readSync clipboard text must be returned');
+
+  const asyncRead = await runIsolatedClipboardRead('module.exports = { read: async () => "async clipboard text" };\n');
+  assert.strictEqual(asyncRead, 'async clipboard text', 'Async read clipboard text must be returned');
+
+  const emptyRead = await runIsolatedClipboardRead('module.exports = { readSync: () => "   " };\n');
+  assert.strictEqual(emptyRead, null, 'Blank clipboard text should return null');
+
+  const throwingRead = await runIsolatedClipboardRead(
+    'module.exports = { readSync: () => { throw new Error("no X server"); } };\n'
+  );
+  assert.strictEqual(throwingRead, null, 'Clipboard read errors must resolve to null');
+
+  const envRead = await readFromClipboard();
+  assert(
+    envRead === null || typeof envRead === 'string',
+    'readFromClipboard must resolve to a string or null without crashing'
+  );
+  console.log('  ✔ Clipboard reading falls back to null and returns text when available.');
+
+  // Test 4c: Heuristic decision parsing for `done --from-clipboard`
+  console.log('\n▶ Test 4c: Heuristic decision parsing');
+  const decisionText = [
+    '# Tech Stack Recommendation',
+    '',
+    '- **Database**: PostgreSQL',
+    '- Framework: Next.js 14',
+    'decisions.auth = NextAuth.js',
+    'Deployment Platform: "Vercel"',
+    'Some unrelated line: not a decision'
+  ].join('\n');
+  const parsed = parseDecisions(decisionText, [
+    'decisions.database',
+    'decisions.framework',
+    'decisions.auth',
+    'decisions.deploymentPlatform',
+    'decisions.missingKey'
+  ]);
+  assert.deepStrictEqual(parsed.found, {
+    'decisions.database': 'PostgreSQL',
+    'decisions.framework': 'Next.js 14',
+    'decisions.auth': 'NextAuth.js',
+    'decisions.deploymentPlatform': 'Vercel'
+  });
+  assert.deepStrictEqual(parsed.missing, ['decisions.missingKey']);
+
+  // Case-insensitive matching and value cleanup
+  const loose = parseDecisions('DATABASE: `postgres`\n\nAuth : bearer tokens', [
+    'decisions.database',
+    'decisions.auth'
+  ]);
+  assert.strictEqual(loose.found['decisions.database'], 'postgres', 'Backtick-wrapped values are cleaned');
+  assert.strictEqual(loose.found['decisions.auth'], 'bearer tokens', 'Spaced separators are tolerated');
+  assert.deepStrictEqual(loose.missing, []);
+
+  // Empty / non-string input reports every key as missing
+  for (const input of ['', '   ', null, undefined, 42]) {
+    const empty = parseDecisions(input, ['decisions.database']);
+    assert.deepStrictEqual(empty.found, {});
+    assert.deepStrictEqual(empty.missing, ['decisions.database']);
+  }
+
+  // Non-array write keys are treated as no keys
+  assert.deepStrictEqual(parseDecisions('Database: X', null), { found: {}, missing: [] });
+  console.log('  ✔ Heuristic decision parsing extracts values and reports missing keys.');
+
+  // Test 5: Simulating Step 1 Completion (`done`)
+  console.log('\n▶ Test 5: Simulating Step 1 Completion');
+  setByPath(context, 'decisions.targetAudience', 'Freelancers and digital nomads');
+  setByPath(
+    context,
+    'decisions.coreValueProp',
+    'Instantly capture receipts and categorize expenses with zero friction.'
+  );
+  saveContext(context, tempDir);
+
+  saveHistory(
+    1,
+    '# Step 1 AI Response\n\nTarget Persona: Freelancer Alex\nPain Point: Loses receipts at tax time.\nValue Prop: Single-click receipt categorization.',
+    tempDir
+  );
+
+  const loadedHist1 = loadHistory(1, tempDir);
+  assert(loadedHist1.includes('Freelancer Alex'), 'History file must contain raw response');
+
+  state.completedSteps.push(1);
+  state.currentStep = 2;
+  saveState(state, tempDir);
+
+  const updatedState = loadState(tempDir);
+  assert.strictEqual(updatedState.currentStep, 2);
+  assert.deepStrictEqual(updatedState.completedSteps, [1]);
+  console.log('  ✔ Step 1 saved to history, context updated, state advanced to 2.');
+
+  // Test 6: Step 2 and Step 3 Resolution with Context Injection
+  console.log('\n▶ Test 6: Context Injection into Step 2');
+  const step2 = webAppTemplate.steps[1];
+  const res2 = resolveStepPrompt(step2, context);
+  assert(
+    res2.resolvedPrompt.includes('Instantly capture receipts'),
+    'Step 2 must inject decisions.coreValueProp from step 1'
+  );
+  console.log('  ✔ Step 2 prompt correctly received context from Step 1.');
+
+  // Simulate Step 2 Completion
+  setByPath(context, 'decisions.mvpFeatures', ['Receipt upload', 'Category breakdown dashboard', 'CSV export']);
+  saveContext(context, tempDir);
+  state.completedSteps.push(2);
+  state.currentStep = 3;
+  saveState(state, tempDir);
+
+  // Step 3 requires tech stack
+  console.log('\n▶ Test 7: Context Injection into Step 3 & 4');
+  setByPath(context, 'decisions.frontendStack', 'Next.js 14 + Tailwind CSS');
+  setByPath(context, 'decisions.backendStack', 'Next.js App Router API');
+  setByPath(context, 'decisions.database', 'PostgreSQL with Prisma');
+  saveContext(context, tempDir);
+
+  const step4 = webAppTemplate.steps[3];
+  const res4 = resolveStepPrompt(step4, context);
+  assert(res4.resolvedPrompt.includes('Next.js 14 + Tailwind CSS'), 'Step 4 prompt has frontendStack');
+  assert(res4.resolvedPrompt.includes('PostgreSQL with Prisma'), 'Step 4 prompt has database');
+  console.log('  ✔ Multi-step context injection verified end-to-end.');
+
+  // Test 8: Missing Requires Warning Check
+  console.log('\n▶ Test 8: Missing Requires Warning Detection');
+  const emptyContext = { project: { name: 'Test' } };
+  const resMissing = resolveStepPrompt(step4, emptyContext);
+  assert(resMissing.warnings.length > 0, 'Should detect missing required keys');
+  assert(resMissing.missingKeys.includes('decisions.database'), 'Should identify missing database key');
+  assert(
+    resMissing.resolvedPrompt.includes('[MISSING: decisions.database]'),
+    'Should flag missing placeholder cleanly'
+  );
+  console.log('  ✔ Missing requirements flagged cleanly without silent undefined injection.');
+
+  // Placeholders may use kebab-case identifiers, such as {{decisions.api-key}}
+  console.log('\n▶ Test 8b: Kebab-case Placeholders');
+  const kebabContext = {};
+  setByPath(kebabContext, 'decisions.api-key', 'sk-test');
+  setByPath(kebabContext, 'decisions.stripe-secret', 'whsec-test');
+  const kebabStep = {
+    id: 'kebab',
+    prompt: 'Key {{decisions.api-key}} and {{ decisions.stripe-secret }} and {{ decisions.not-set }}'
+  };
+  const kebabRes = resolveStepPrompt(kebabStep, kebabContext);
+  assert(
+    kebabRes.resolvedPrompt.endsWith('Key sk-test and whsec-test and [MISSING: decisions.not-set]'),
+    'Kebab-case placeholders resolve, and a missing one is flagged instead of left as raw text'
+  );
+  assert(
+    kebabRes.resolvedPrompt.startsWith('### STRICT ARCHITECTURAL CONSTRAINTS (DO NOT ALTER)'),
+    'Recorded decisions anchor an architectural contract at the top of the prompt'
+  );
+  assert.deepStrictEqual(kebabRes.missingKeys, ['decisions.not-set']);
+  const kebabTemplate = (secondPrompt) => ({
+    title: 'Kebab template',
+    steps: [
+      { id: 'first', prompt: 'Record the key', writes: ['decisions.api-key'] },
+      { id: 'second', prompt: secondPrompt, requires: ['decisions.api-key'] }
+    ]
+  });
+  assert.deepStrictEqual(validateTemplate(kebabTemplate('Use {{decisions.api-key}}')), { valid: true, errors: [] });
+  const kebabInvalid = validateTemplate(kebabTemplate('Use {{decisions.other-key}}'));
+  assert.strictEqual(kebabInvalid.valid, false, 'A kebab-case placeholder that no step writes is reported');
+  assert(kebabInvalid.errors.some((e) => e.includes('decisions.other-key')));
+  console.log('  ✔ Kebab-case placeholders resolve and validate.');
+
+  // Test 8c: Immutable architectural contract anchoring (#109)
+  console.log('\n▶ Test 8c: Architectural contract anchoring');
+  const contractContext = {
+    project: { name: 'ShopStack', experienceLevel: 'Intermediate' },
+    decisions: {
+      framework: 'Next.js 14',
+      database: 'PostgreSQL with Prisma',
+      auth: 'NextAuth.js',
+      deploymentPlatform: 'Vercel'
+    }
+  };
+  const anchoredStep = { id: 'anchored', prompt: 'Build the {{decisions.database}} schema.' };
+  const anchoredRes = resolveStepPrompt(anchoredStep, contractContext);
+  assert(
+    anchoredRes.resolvedPrompt.startsWith('### STRICT ARCHITECTURAL CONSTRAINTS (DO NOT ALTER)'),
+    'Prompt must start with the contract header when decisions exist'
+  );
+  assert(anchoredRes.resolvedPrompt.includes('- Project: ShopStack (Level: Intermediate)'), 'Contract pins project');
+  assert(anchoredRes.resolvedPrompt.includes('- Primary Framework: Next.js 14'), 'Contract pins framework');
+  assert(anchoredRes.resolvedPrompt.includes('- Database / ORM: PostgreSQL with Prisma'), 'Contract pins database');
+  assert(anchoredRes.resolvedPrompt.includes('- Authentication: NextAuth.js'), 'Contract pins auth');
+  assert(
+    anchoredRes.resolvedPrompt.includes('- Deployment Platform: Vercel'),
+    'Contract dynamically gathers all other recorded step.writes'
+  );
+  assert(
+    anchoredRes.resolvedPrompt.includes('Strict Requirement: Adhere to these exact choices.'),
+    'Contract ends with the strict requirement'
+  );
+  assert(
+    anchoredRes.resolvedPrompt.includes('Build the PostgreSQL with Prisma schema.'),
+    'Original prompt follows the contract block'
+  );
+  assert(!anchoredRes.resolvedPrompt.includes('undefined'), 'No undefined values leak into the contract');
+  assert(!anchoredRes.resolvedPrompt.includes('[MISSING:'), 'No missing markers leak into the contract');
+
+  // Missing decision variables are omitted cleanly.
+  const partialContext = { project: { name: 'Partial' }, decisions: { database: 'SQLite' } };
+  const partialRes = resolveStepPrompt(anchoredStep, partialContext);
+  assert(partialRes.resolvedPrompt.includes('- Database / ORM: SQLite'), 'Recorded decision is anchored');
+  assert(!partialRes.resolvedPrompt.includes('Primary Framework:'), 'Missing framework is omitted cleanly');
+  assert(!partialRes.resolvedPrompt.includes('Authentication:'), 'Missing auth is omitted cleanly');
+  assert(partialRes.resolvedPrompt.includes('- Project: Partial'), 'Project line renders without a level');
+
+  // No decisions → no contract block at all.
+  const emptyRes = resolveStepPrompt({ id: 'empty', prompt: 'Do the thing.' }, { project: { name: 'X' } });
+  assert.strictEqual(emptyRes.architecturalContract, '', 'No decisions means no contract');
+  assert(
+    !emptyRes.resolvedPrompt.includes('STRICT ARCHITECTURAL CONSTRAINTS'),
+    'Prompt stays clean when no decisions exist'
+  );
+  assert.strictEqual(emptyRes.resolvedPrompt, 'Do the thing.', 'Prompt is unchanged without decisions');
+
+  // Object decision values render as JSON rather than [object Object].
+  const objectContract = buildArchitecturalContract({ decisions: { auth: { provider: 'Auth0', mfa: true } } });
+  assert(objectContract.includes('- Authentication:'), 'Object decision is anchored');
+  assert(objectContract.includes('"provider":"Auth0"'), 'Object decision renders as JSON');
+  console.log('  ✔ Architectural contract anchoring verified.');
+
+  // Test 9: `back` Command Logic
+  console.log('\n▶ Test 9: Back Navigation');
+  const stepBeforeBack = state.currentStep;
+  state.currentStep = Math.max(1, state.currentStep - 1);
+  state.completedSteps = state.completedSteps.filter((s) => s !== state.currentStep);
+  saveState(state, tempDir);
+
+  const stateAfterBack = loadState(tempDir);
+  assert.strictEqual(stateAfterBack.currentStep, stepBeforeBack - 1, 'Current step should decrement');
+  assert(
+    fs.existsSync(path.join(tempDir, '.buildwithai', 'history', 'step-01.md')),
+    'History file must NOT be deleted on back'
+  );
+  console.log('  ✔ Back command moved step back while preserving history.');
+
+  // Test 9b: Undo restores state and context from snapshots
+  console.log('\\n▶ Test 9b: Undo Step Snapshots & Rollback');
+  const undoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-undo-'));
+  try {
+    initState(
+      {
+        projectName: 'Undo Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Intermediate',
+        projectIdea: 'A demo project.',
+        totalSteps: 4
+      },
+      undoDir
+    );
+    saveContext({ project: { name: 'Undo Demo' }, decisions: { database: 'SQLite' } }, undoDir);
+
+    // Simulate completing step 1: snapshot first, then mutate.
+    const snapshotPath = saveSnapshot(1, undoDir);
+    assert.strictEqual(
+      snapshotPath,
+      path.join(undoDir, '.buildwithai', 'snapshots', 'step-01.json'),
+      'snapshot must live under .buildwithai/snapshots/'
+    );
+    assert.strictEqual(
+      getSnapshotsDir(undoDir),
+      path.join(undoDir, '.buildwithai', 'snapshots'),
+      'getSnapshotsDir resolves the snapshots directory'
+    );
+    const loaded = loadSnapshot(1, undoDir);
+    assert.strictEqual(loaded.step, 1, 'loadSnapshot reads the snapshot back');
+    assert.strictEqual(loaded.state.currentStep, 1, 'snapshot holds pre-step state');
+    assert.strictEqual(loaded.context.decisions.database, 'SQLite', 'snapshot holds pre-step context');
+    const ctxAfter = loadContext(undoDir);
+    ctxAfter.decisions.database = 'PostgreSQL';
+    ctxAfter.decisions.authStrategy = 'Clerk';
+    saveContext(ctxAfter, undoDir);
+    const stAfter = loadState(undoDir);
+    stAfter.currentStep = 2;
+    stAfter.completedSteps = [1];
+    saveState(stAfter, undoDir);
+    saveHistory(1, 'Step 1 AI response', undoDir);
+
+    // Snapshot a second completed step so the latest one is undone first.
+    saveSnapshot(2, undoDir);
+    const stAfter2 = loadState(undoDir);
+    stAfter2.currentStep = 3;
+    stAfter2.completedSteps = [1, 2];
+    saveState(stAfter2, undoDir);
+    assert.strictEqual(listSnapshots(undoDir).length, 2, 'two snapshots must be listed');
+
+    // Undo the latest step (step 2).
+    const undone2 = undoLastStep(undoDir);
+    assert.strictEqual(undone2.step, 2, 'undo must target the latest snapshot');
+    const restored2 = loadState(undoDir);
+    assert.strictEqual(restored2.currentStep, 2, 'step counter must move back to step 2');
+    assert.deepStrictEqual(restored2.completedSteps, [1], 'step 2 must leave completedSteps');
+    assert.strictEqual(loadContext(undoDir).decisions.database, 'PostgreSQL', 'context must be the pre-step-2 state');
+    assert.strictEqual(listSnapshots(undoDir).length, 1, 'consumed snapshot must be removed');
+
+    // Undo step 1: both step counter AND context decisions roll back.
+    const undone1 = undoLastStep(undoDir);
+    assert.strictEqual(undone1.step, 1);
+    const restored1 = loadState(undoDir);
+    assert.strictEqual(restored1.currentStep, 1, 'step counter restored to 1');
+    assert.deepStrictEqual(restored1.completedSteps, [], 'no completed steps remain');
+    const rolledBack = loadContext(undoDir);
+    assert.strictEqual(rolledBack.decisions.database, 'SQLite', 'step 1 decision must be rolled back');
+    assert.strictEqual(rolledBack.decisions.authStrategy, undefined, 'later decisions must not survive undo');
+    assert(
+      !fs.existsSync(path.join(undoDir, '.buildwithai', 'history', 'step-01.md')),
+      'the undone step history file must be removed'
+    );
+
+    // Safe fallback when no snapshot exists.
+    assert.strictEqual(undoLastStep(undoDir), null, 'undo with no snapshots must return null');
+    assert(deleteSnapshot(99, undoDir) === false, 'deleting a missing snapshot must be a no-op');
+
+    // Corrupt snapshots are consumed so undo can fall back instead of getting stuck.
+    saveSnapshot(1, undoDir);
+    fs.writeFileSync(path.join(undoDir, '.buildwithai', 'snapshots', 'step-01.json'), '{ broken', 'utf8');
+    assert.strictEqual(undoLastStep(undoDir), null, 'corrupt snapshot must fall back to no-op');
+    assert.strictEqual(listSnapshots(undoDir).length, 0, 'corrupt snapshot must be consumed');
+
+    // Snapshots are isolated per branch when BUILD_WITH_AI_BRANCH_SCOPED=1.
+    const previousScoped = process.env.BUILD_WITH_AI_BRANCH_SCOPED;
+    process.env.BUILD_WITH_AI_BRANCH_SCOPED = '1';
+    try {
+      execSync('git init -q -b main', { cwd: undoDir, stdio: 'ignore' });
+      execSync('git config user.email test@example.com && git config user.name Test', {
+        cwd: undoDir,
+        stdio: 'ignore'
+      });
+      initState(
+        {
+          projectName: 'Scoped Undo',
+          templateId: 'web-app',
+          templateTitle: 'Web App',
+          experienceLevel: 'Intermediate',
+          projectIdea: 'Scoped demo.',
+          totalSteps: 4
+        },
+        undoDir
+      );
+      saveSnapshot(1, undoDir);
+      assert(
+        fs.existsSync(path.join(undoDir, '.buildwithai', 'branches', 'main', 'snapshots', 'step-01.json')),
+        'snapshots must be branch-scoped when enabled'
+      );
+      const undoneScoped = undoLastStep(undoDir);
+      assert.strictEqual(undoneScoped.step, 1, 'undo works inside branch-scoped storage');
+    } finally {
+      process.env.BUILD_WITH_AI_BRANCH_SCOPED = previousScoped || '';
+    }
+    console.log('  ✔ undo restores step counter and context decisions, cleans history, and falls back safely.');
+  } finally {
+    fs.rmSync(undoDir, { recursive: true, force: true });
+  }
+
+  // Restore step for export test
+  state.currentStep = 3;
+  saveState(state, tempDir);
+
+  // Test 10: Export Documentation
+  console.log('\n▶ Test 10: Export (README.md, BUILD_LOG.md, CONTEXT.md)');
+  await runExport(tempDir);
+
+  assert(fs.existsSync(path.join(tempDir, 'README.md')), 'README.md must be generated');
+  assert(fs.existsSync(path.join(tempDir, 'BUILD_LOG.md')), 'BUILD_LOG.md must be generated');
+  assert(fs.existsSync(path.join(tempDir, '.buildwithai', 'CONTEXT.md')), 'CONTEXT.md must be generated');
+
+  const readmeContent = fs.readFileSync(path.join(tempDir, 'README.md'), 'utf8');
+  assert(readmeContent.includes('Expense Tracker'), 'README must contain project name');
+  assert(readmeContent.includes('Next.js 14 + Tailwind CSS'), 'README must contain chosen frontend');
+  assert(readmeContent.includes('PostgreSQL with Prisma'), 'README must contain chosen database');
+
+  const buildLogContent = fs.readFileSync(path.join(tempDir, 'BUILD_LOG.md'), 'utf8');
+  assert(buildLogContent.includes('Freelancer Alex'), 'BUILD_LOG must contain raw step history');
+
+  const contextMdContent = fs.readFileSync(path.join(tempDir, '.buildwithai', 'CONTEXT.md'), 'utf8');
+  assert(contextMdContent.includes('Project Context & Architecture Decisions'), 'CONTEXT.md header check');
+  console.log('  ✔ All export files generated with deterministic content.');
+
+  // Test 10b: Existing README preservation and explicit overwrite
+  const generatedReadme = fs.readFileSync(path.join(tempDir, 'README.md'), 'utf8');
+  fs.writeFileSync(path.join(tempDir, 'README.md'), 'User-authored documentation', 'utf8');
+  await runExport(tempDir, { interactive: false });
+  assert.strictEqual(
+    fs.readFileSync(path.join(tempDir, 'README.md'), 'utf8'),
+    'User-authored documentation',
+    'Non-interactive export must preserve an existing README.md'
+  );
+  assert.strictEqual(
+    fs.readFileSync(path.join(tempDir, 'README.ai.md'), 'utf8'),
+    generatedReadme,
+    'Non-interactive export must write generated content to README.ai.md'
+  );
+  await runExport(tempDir, { force: true });
+  assert.notStrictEqual(
+    fs.readFileSync(path.join(tempDir, 'README.md'), 'utf8'),
+    'User-authored documentation',
+    'Force export must overwrite README.md explicitly'
+  );
+  console.log('  ✔ Existing README.md is preserved unless --force is used.');
+
+  const promptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-export-prompt-'));
+  try {
+    fs.writeFileSync(path.join(promptDir, 'README.md'), 'User-authored documentation', 'utf8');
+    assert.strictEqual(
+      await resolveReadmePath(promptDir, {
+        interactive: true,
+        prompt: async () => ({ action: 'fallback' })
+      }),
+      path.join(promptDir, 'README.ai.md'),
+      'Interactive fallback choice must select README.ai.md'
+    );
+    assert.strictEqual(
+      await resolveReadmePath(promptDir, {
+        interactive: true,
+        prompt: async () => ({ action: 'cancel' })
+      }),
+      null,
+      'Interactive cancel choice must preserve the existing README.md'
+    );
+  } finally {
+    fs.rmSync(promptDir, { recursive: true, force: true });
+  }
+
+  // Test 10c: export --rules syncs editor rule files from context.json
+  console.log('\n▶ Test 10c: Export --rules (editor rule files)');
+  const rulesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-export-rules-'));
+  try {
+    initState(
+      {
+        projectName: 'Rules Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Intermediate',
+        projectIdea: 'A demo project.',
+        totalSteps: 6
+      },
+      rulesDir
+    );
+    saveContext(
+      {
+        project: { name: 'Rules Demo', idea: 'A demo project.' },
+        decisions: { frontendStack: 'Next.js 14', database: 'PostgreSQL with Prisma', deploymentPlatform: 'Vercel' }
+      },
+      rulesDir
+    );
+
+    // --dry-run must only list paths and write nothing.
+    const listed = await runRulesExport(rulesDir, { dryRun: true });
+    assert.strictEqual(listed.length, 5, 'dry run must list all 5 rule files');
+    assert(!fs.existsSync(path.join(rulesDir, 'CLAUDE.md')), 'dry run must not create rule files');
+
+    // Real run generates all five files.
+    const written = await runRulesExport(rulesDir);
+    assert.strictEqual(written.length, 5, 'all 5 rule files must be written');
+    const expectedFiles = [
+      '.cursorrules',
+      path.join('.cursor', 'rules', 'project-decisions.mdc'),
+      '.windsurfrules',
+      'CLAUDE.md',
+      path.join('.github', 'copilot-instructions.md')
+    ];
+    for (const rel of expectedFiles) {
+      assert(fs.existsSync(path.join(rulesDir, rel)), `${rel} must be generated`);
+    }
+
+    const claude = fs.readFileSync(path.join(rulesDir, 'CLAUDE.md'), 'utf8');
+    assert(claude.includes('Rules Demo'), 'rules must contain the project name');
+    assert(claude.includes('Next.js 14'), 'rules must contain the tech stack');
+    assert(claude.includes('PostgreSQL with Prisma'), 'rules must contain the database choice');
+    assert(claude.includes('Vercel'), 'rules must contain the hosting decision');
+    assert(claude.includes(RULES_BLOCK_START) && claude.includes(RULES_BLOCK_END), 'managed block markers present');
+
+    const mdc = fs.readFileSync(path.join(rulesDir, '.cursor', 'rules', 'project-decisions.mdc'), 'utf8');
+    assert(mdc.startsWith('---'), '.mdc rule file must carry Cursor frontmatter');
+    assert(mdc.includes('description:'), '.mdc frontmatter must describe the rule');
+
+    // Unrelated custom instructions must survive re-sync: they are kept and the
+    // managed block is appended rather than clobbering the file.
+    const customNote = 'Always use TypeScript strict mode.';
+    fs.writeFileSync(path.join(rulesDir, '.windsurfrules'), customNote, 'utf8');
+    await runRulesExport(rulesDir);
+    const wind = fs.readFileSync(path.join(rulesDir, '.windsurfrules'), 'utf8');
+    assert(wind.includes(customNote), 'custom instructions must be preserved');
+    assert(wind.includes(RULES_BLOCK_START), 'managed block must be appended to custom files');
+
+    // Idempotency: a second run replaces the block in place — never duplicates it.
+    await runRulesExport(rulesDir);
+    const claude2 = fs.readFileSync(path.join(rulesDir, 'CLAUDE.md'), 'utf8');
+    assert.strictEqual(claude2.split(RULES_BLOCK_START).length - 1, 1, 're-sync must not duplicate the managed block');
+    assert(claude2.includes('PostgreSQL with Prisma'), 're-sync keeps generated content fresh');
+
+    // Unit checks for the merge helper.
+    assert.strictEqual(
+      mergeRulesFile(null, 'body'),
+      `${RULES_BLOCK_START}\nbody\n${RULES_BLOCK_END}\n`,
+      'missing file becomes just the managed block'
+    );
+    const replaced = mergeRulesFile(
+      `before\n${RULES_BLOCK_START}\nold decisions\n${RULES_BLOCK_END}\nafter`,
+      'new decisions'
+    );
+    assert(
+      replaced.includes('before') && replaced.includes('after') && replaced.includes('new decisions'),
+      'in-place replacement keeps surrounding custom text'
+    );
+    assert(!replaced.includes('old decisions'), 'stale managed content is replaced');
+    assert.strictEqual(getRuleFilePaths(rulesDir).length, 5, 'getRuleFilePaths covers all targets');
+    console.log('  ✔ export --rules generates rule files, preserves custom instructions, and stays idempotent.');
+  } finally {
+    fs.rmSync(rulesDir, { recursive: true, force: true });
+  }
+
+  // Test 11: Reset Project
+  console.log('\n▶ Test 11: Reset Project (.buildwithai cleanup)');
+  // Create a dummy user source file to make sure it is not touched
+  fs.writeFileSync(path.join(tempDir, 'my-source-code.js'), 'console.log("hello")', 'utf8');
+
+  resetProject(tempDir);
+  assert.strictEqual(isInitialized(tempDir), false, 'Storage should be wiped');
+  assert.strictEqual(fs.existsSync(getStorageDir(tempDir)), false, '.buildwithai dir removed');
+  assert.strictEqual(fs.existsSync(path.join(tempDir, 'my-source-code.js')), true, 'User code preserved intact');
+  console.log('  ✔ Reset cleaned .buildwithai and preserved user source files.');
+
+  // Test 12: Malformed Template JSON handling and graceful skipping
+  console.log('\n Test 12: Malformed Template JSON handling');
+  const projectTemplatesDir = path.join(__dirname, '..', 'templates');
+
+  const badTemplatePath = path.join(projectTemplatesDir, 'bad-template.json');
+
+  // Temporarily write a malformed JSON file into the project templates directory
+  fs.writeFileSync(badTemplatePath, '{ malformed json content', 'utf8');
+
+  try {
+    // Load templates, ensuring loadTemplates encounters the bad JSON and continues safely
+    const loadedTemplates = loadTemplates();
+
+    // Check whether the corrupted template was excluded and a valid template still loads
+    const hasBad = loadedTemplates.some((t) => t.id === 'bad-template');
+    const hasGood = loadedTemplates.some((t) => t.id === 'web-app');
+
+    assert.strictEqual(hasBad, false, 'Malformed template must be ignored');
+    assert.strictEqual(hasGood, true, 'Valid templates must still load');
+    console.log('  ✔ Malformed templates handled gracefully without crashing.');
+  } finally {
+    // Ensure the temporary bad template file is always removed, even if assertions fail
+    if (fs.existsSync(badTemplatePath)) {
+      fs.unlinkSync(badTemplatePath);
+    }
+  }
+  // Test 12: --version CLI Flag
+  console.log('\n▶ Test 12: --version CLI Flag');
+  const cliPath = path.join(__dirname, '..', 'bin', 'cli.js');
+  const pkg = require('../package.json');
+
+  const versionOutput = execSync(`node "${cliPath}" --version`).toString().trim();
+  assert.strictEqual(versionOutput, pkg.version, `--version should print ${pkg.version}, got ${versionOutput}`);
+  console.log('  ✔ --version flag prints correct version and exits successfully.');
+
+  // Test 13: targetFiles soft validation helpers
+  console.log('\n Test 13: targetFiles existence check');
+  const targetFilesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-targetfiles-'));
+  try {
+    fs.writeFileSync(path.join(targetFilesDir, 'schema.prisma'), 'model User { id Int }', 'utf8');
+    fs.mkdirSync(path.join(targetFilesDir, 'lib'), { recursive: true });
+
+    assert.deepStrictEqual(
+      findMissingTargetFiles(['schema.prisma'], targetFilesDir),
+      [],
+      'Existing files must not be reported as missing'
+    );
+    assert.deepStrictEqual(
+      findMissingTargetFiles(['schema.prisma', 'lib/db.ts', 'scripts/'], targetFilesDir),
+      ['lib/db.ts', 'scripts/'],
+      'Missing files and directories must be reported in order'
+    );
+    assert.deepStrictEqual(findMissingTargetFiles([], targetFilesDir), [], 'Empty input returns empty');
+    assert.deepStrictEqual(findMissingTargetFiles(undefined, targetFilesDir), [], 'Undefined input returns empty');
+    assert.deepStrictEqual(
+      findMissingTargetFiles(['schema.prisma', '', null, 42], targetFilesDir),
+      [],
+      'Non-string and blank entries must be ignored'
+    );
+
+    // printTargetFileTips must print the friendly tip and stay non-blocking
+    const captured = [];
+    const originalLog = console.log;
+    console.log = (...args) => captured.push(args.join(' '));
+    let missing;
+    try {
+      missing = printTargetFileTips(['schema.prisma', 'lib/db.ts'], targetFilesDir);
+    } finally {
+      console.log = originalLog;
+    }
+    assert.deepStrictEqual(missing, ['lib/db.ts'], 'Only missing files are returned');
+    assert.strictEqual(captured.length, 1, 'One tip per missing file');
+    assert(
+      captured[0].includes('Tip: Target file "lib/db.ts" was not found in the workspace yet.'),
+      'Tip message must match the documented format'
+    );
+
+    console.log('  ✔ targetFiles existence check reports missing files and prints friendly tips.');
+  } finally {
+    fs.rmSync(targetFilesDir, { recursive: true, force: true });
+  }
+
+  // Test 14: getGitChangedFiles parses `git status --porcelain`
+  console.log('\n▶ Test 14: git changed-files helper');
+  const gitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-git-'));
+  try {
+    execSync('git init -q', { cwd: gitDir });
+    execSync('git config user.email "test@example.com" && git config user.name "Test"', { cwd: gitDir });
+    fs.writeFileSync(path.join(gitDir, 'tracked.txt'), 'v1');
+    execSync('git add tracked.txt && git commit -qm init', { cwd: gitDir });
+    fs.writeFileSync(path.join(gitDir, 'tracked.txt'), 'v2'); // modified
+    fs.writeFileSync(path.join(gitDir, 'new.txt'), 'new'); // untracked
+
+    const changed = getGitChangedFiles(gitDir);
+    assert(changed instanceof Set, 'returns a Set inside a git repository');
+    assert(changed.has('tracked.txt'), 'modified file is reported');
+    assert(changed.has('new.txt'), 'untracked file is reported');
+    assert(!changed.has('missing.txt'), 'unchanged paths are not reported');
+
+    // Outside a git repository it returns null instead of throwing
+    const plainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-nogit-'));
+    try {
+      assert.strictEqual(getGitChangedFiles(plainDir), null, 'non-git directory returns null');
+    } finally {
+      fs.rmSync(plainDir, { recursive: true, force: true });
+    }
+
+    console.log('  ✔ getGitChangedFiles parses git status and stays silent outside git repos.');
+  } finally {
+    fs.rmSync(gitDir, { recursive: true, force: true });
+  }
+
+  // ── Interactive config editor (`config` command) ──
+  {
+    // Value parsing mirrors the `set` command: valid JSON is stored as JSON, the rest stays a string.
+    assert.strictEqual(parseEditorValue('PostgreSQL'), 'PostgreSQL');
+    assert.strictEqual(parseEditorValue('42'), 42);
+    assert.strictEqual(parseEditorValue('true'), true);
+    assert.strictEqual(parseEditorValue('null'), null);
+    assert.deepStrictEqual(parseEditorValue('{"a":1}'), { a: 1 });
+    assert.deepStrictEqual(parseEditorValue('["x","y"]'), ['x', 'y']);
+    assert.strictEqual(parseEditorValue('  padded  '), '  padded  ');
+
+    // Display helpers.
+    assert.strictEqual(formatEditorValue('plain'), 'plain');
+    assert.strictEqual(formatEditorValue(7), '7');
+    assert.strictEqual(formatEditorValue({ a: 1 }), JSON.stringify({ a: 1 }, null, 2));
+    assert(summarizeValue('x'.repeat(200)).endsWith('...'), 'Long values are truncated in the picker');
+    assert.strictEqual(summarizeValue('short'), 'short');
+
+    // Empty context: nothing to pick, so no prompt and no save.
+    let prompted = false;
+    assert.deepStrictEqual(
+      await runConfigEditor({
+        context: {},
+        inquirer: {
+          prompt: async () => {
+            prompted = true;
+          }
+        },
+        save: () => {
+          throw new Error('must not save');
+        }
+      }),
+      { updated: false, reason: 'empty' }
+    );
+    assert.strictEqual(prompted, false, 'Empty context must not prompt');
+
+    const stubInquirer = (answers) => ({ prompt: async () => answers.shift() });
+
+    // Full edit flow: JSON input is parsed and saved, with before/after reported.
+    const context = { decisions: { database: 'SQLite', retries: 3 } };
+    let saved = null;
+    const edited = await runConfigEditor({
+      context,
+      inquirer: stubInquirer([{ selectedKey: 'decisions.database' }, { rawValue: '"PostgreSQL"' }]),
+      save: (ctx) => {
+        saved = ctx;
+      }
+    });
+    assert.strictEqual(edited.updated, true);
+    assert.strictEqual(edited.key, 'decisions.database');
+    assert.strictEqual(edited.before, 'SQLite');
+    assert.strictEqual(edited.after, 'PostgreSQL');
+    assert.strictEqual(saved.decisions.database, 'PostgreSQL');
+    assert.strictEqual(context.decisions.database, 'PostgreSQL');
+
+    // Blank input cancels the edit; nothing is saved.
+    saved = null;
+    const cancelled = await runConfigEditor({
+      context: { decisions: { a: 1 } },
+      inquirer: stubInquirer([{ selectedKey: 'decisions.a' }, { rawValue: '   ' }]),
+      save: (ctx) => {
+        saved = ctx;
+      }
+    });
+    assert.strictEqual(cancelled.updated, false);
+    assert.strictEqual(cancelled.reason, 'cancelled');
+    assert.strictEqual(cancelled.key, 'decisions.a');
+    assert.strictEqual(saved, null);
+
+    // Identical value: no save needed.
+    saved = null;
+    const unchanged = await runConfigEditor({
+      context: { decisions: { a: 1 } },
+      inquirer: stubInquirer([{ selectedKey: 'decisions.a' }, { rawValue: '1' }]),
+      save: (ctx) => {
+        saved = ctx;
+      }
+    });
+    assert.strictEqual(unchanged.updated, false);
+    assert.strictEqual(unchanged.reason, 'unchanged');
+    assert.strictEqual(saved, null);
+
+    console.log('  ✔ config editor parses values like `set` and handles cancel/unchanged/empty.');
+
+    // CLI-level: `config` needs an interactive terminal.
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-config-cli-'));
+    try {
+      initState(
+        {
+          projectName: 'Config CLI',
+          templateId: 'x',
+          templateTitle: 'X',
+          experienceLevel: 'y',
+          projectIdea: 'z',
+          totalSteps: 1
+        },
+        configDir
+      );
+      const nonInteractive = spawnSync(process.execPath, [path.join(__dirname, '..', 'bin', 'cli.js'), 'config'], {
+        cwd: configDir,
+        encoding: 'utf8',
+        stdio: 'pipe',
+        timeout: 15000
+      });
+      assert.strictEqual(nonInteractive.status, 1, 'Non-interactive config must exit non-zero');
+      assert(
+        (nonInteractive.stderr + nonInteractive.stdout).includes('interactive terminal'),
+        'Non-interactive config must explain the fallback'
+      );
+
+      // Without an initialized project, `config` refuses before any prompt.
+      const noProjectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-config-noproj-'));
+      try {
+        const noProject = spawnSync(process.execPath, [path.join(__dirname, '..', 'bin', 'cli.js'), 'config'], {
+          cwd: noProjectDir,
+          encoding: 'utf8',
+          stdio: 'pipe',
+          timeout: 15000
+        });
+        assert.strictEqual(noProject.status, 1);
+        assert((noProject.stderr + noProject.stdout).includes('No project found'));
+      } finally {
+        fs.rmSync(noProjectDir, { recursive: true, force: true });
+      }
+
+      console.log('  ✔ `config` falls back cleanly without a TTY and requires an initialized project.');
+    } finally {
+      fs.rmSync(configDir, { recursive: true, force: true });
+    }
+  }
+
+  // ── Branch-scoped storage (BUILD_WITH_AI_BRANCH_SCOPED) ──
+  {
+    const previousEnv = process.env.BUILD_WITH_AI_BRANCH_SCOPED;
+    try {
+      // Default behavior stays 100% backward compatible without the env var.
+      delete process.env.BUILD_WITH_AI_BRANCH_SCOPED;
+      assert.strictEqual(isBranchScopedEnabled(), false, 'Branch scoping must be off by default');
+      const plainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-branch-plain-'));
+      try {
+        assert.strictEqual(
+          getStorageDir(plainDir),
+          path.join(plainDir, '.buildwithai'),
+          'Storage dir must be the shared root when scoping is off'
+        );
+      } finally {
+        fs.rmSync(plainDir, { recursive: true, force: true });
+      }
+
+      // Branch names are sanitized into a single safe directory segment.
+      assert.strictEqual(sanitizeBranchName('feature/auth'), 'feature-auth');
+      assert.strictEqual(sanitizeBranchName('release 1.0'), 'release-1.0');
+      assert.strictEqual(sanitizeBranchName('main'), 'main');
+      assert.strictEqual(sanitizeBranchName('..'), null, 'Parent references must be rejected');
+      assert.strictEqual(sanitizeBranchName(''), null);
+      assert.strictEqual(sanitizeBranchName('   '), null);
+
+      // Enabled outside a git repo: fall back to the default shared storage.
+      process.env.BUILD_WITH_AI_BRANCH_SCOPED = '1';
+      assert.strictEqual(isBranchScopedEnabled(), true);
+      const nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-branch-nogit-'));
+      try {
+        assert.strictEqual(getCurrentGitBranch(nonGitDir), null, 'Non-git dir must report no branch');
+        assert.strictEqual(
+          getStorageDir(nonGitDir),
+          path.join(nonGitDir, '.buildwithai'),
+          'Must fall back to shared storage without git'
+        );
+        initState(
+          {
+            projectName: 'Fallback project',
+            templateId: 'x',
+            templateTitle: 'X',
+            experienceLevel: 'y',
+            projectIdea: 'z',
+            totalSteps: 1
+          },
+          nonGitDir
+        );
+        assert.strictEqual(loadState(nonGitDir).projectName, 'Fallback project');
+        assert(fs.existsSync(path.join(nonGitDir, '.buildwithai', 'state.json')));
+      } finally {
+        fs.rmSync(nonGitDir, { recursive: true, force: true });
+      }
+
+      // Enabled inside a git repo: state is isolated per branch.
+      let gitAvailable = true;
+      try {
+        execSync('git --version', { stdio: 'ignore' });
+      } catch {
+        gitAvailable = false;
+      }
+      if (gitAvailable) {
+        const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-branch-git-'));
+        try {
+          execSync('git init -b main', { cwd: repoDir, stdio: 'ignore' });
+          // Commit first so `main` exists as a real branch before switching.
+          execSync('git -c user.email=test@test.com -c user.name=test commit --allow-empty -m init', {
+            cwd: repoDir,
+            stdio: 'ignore'
+          });
+          assert.strictEqual(getCurrentGitBranch(repoDir), 'main');
+          assert.strictEqual(getStorageDir(repoDir), path.join(repoDir, '.buildwithai', 'branches', 'main'));
+
+          initState(
+            {
+              projectName: 'Main branch project',
+              templateId: 'x',
+              templateTitle: 'X',
+              experienceLevel: 'y',
+              projectIdea: 'z',
+              totalSteps: 2
+            },
+            repoDir
+          );
+          assert.strictEqual(loadState(repoDir).projectName, 'Main branch project');
+          assert(fs.existsSync(path.join(repoDir, '.buildwithai', 'branches', 'main', 'state.json')));
+          assert(
+            !fs.existsSync(path.join(repoDir, '.buildwithai', 'state.json')),
+            'Root state.json must not be created when scoping is enabled'
+          );
+
+          execSync('git checkout -b feature/auth', { cwd: repoDir, stdio: 'ignore' });
+          assert.strictEqual(
+            getStorageDir(repoDir),
+            path.join(repoDir, '.buildwithai', 'branches', 'feature-auth'),
+            'Slashes in branch names must be sanitized, not nested'
+          );
+          assert.strictEqual(loadState(repoDir), null, 'A new branch starts with no state');
+          initState(
+            {
+              projectName: 'Feature branch project',
+              templateId: 'x',
+              templateTitle: 'X',
+              experienceLevel: 'y',
+              projectIdea: 'z',
+              totalSteps: 3
+            },
+            repoDir
+          );
+          assert.strictEqual(loadState(repoDir).projectName, 'Feature branch project');
+
+          execSync('git checkout main', { cwd: repoDir, stdio: 'ignore' });
+          assert.strictEqual(loadState(repoDir).projectName, 'Main branch project', 'Branch states must stay isolated');
+          assert.strictEqual(isInitialized(repoDir), true);
+
+          // Detached HEAD falls back to the default shared storage.
+          const headSha = execSync('git rev-parse HEAD', { cwd: repoDir, encoding: 'utf8', stdio: 'pipe' }).trim();
+          execSync(`git checkout ${headSha}`, { cwd: repoDir, stdio: 'ignore' });
+          assert.strictEqual(getCurrentGitBranch(repoDir), null, 'Detached HEAD must report no branch');
+          assert.strictEqual(
+            getStorageDir(repoDir),
+            path.join(repoDir, '.buildwithai'),
+            'Detached HEAD must fall back to shared storage'
+          );
+          execSync('git checkout main', { cwd: repoDir, stdio: 'ignore' });
+
+          // resetProject clears only the current branch's storage.
+          resetProject(repoDir);
+          assert.strictEqual(loadState(repoDir), null);
+          assert(
+            fs.existsSync(path.join(repoDir, '.buildwithai', 'branches', 'feature-auth', 'state.json')),
+            'Other branches must survive a reset'
+          );
+        } finally {
+          fs.rmSync(repoDir, { recursive: true, force: true });
+        }
+      }
+
+      console.log('  ✔ branch-scoped storage isolates state per git branch with safe fallback.');
+    } finally {
+      if (previousEnv === undefined) {
+        delete process.env.BUILD_WITH_AI_BRANCH_SCOPED;
+      } else {
+        process.env.BUILD_WITH_AI_BRANCH_SCOPED = previousEnv;
+      }
+    }
+  }
+
+  // Test 14: safePrompt cancels cleanly with exit status 130 on Ctrl+C
+  console.log('\\n Test 14: safePrompt Ctrl+C handling');
+  const safePromptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-safeprompt-'));
+  try {
+    // Spawns a child process so safePrompt's process.exit(130) does not kill
+    // this test runner. The child monkey-patches inquirer.prompt to simulate
+    // the requested outcome, then calls safePrompt once.
+    const runnerScript = path.join(safePromptDir, 'run-safe-prompt.js');
+    fs.writeFileSync(
+      runnerScript,
+      [
+        'const { safePrompt } = require(' + JSON.stringify(path.join(__dirname, '..', 'lib', 'ui.js')) + ');',
+        'const inquirer = require(' +
+          JSON.stringify(require.resolve('inquirer', { paths: [path.join(__dirname, '..')] })) +
+          ');',
+        'const mode = process.argv[2];',
+        "if (mode === 'exit-prompt-error') {",
+        "  const err = new Error('User force closed the prompt with 0 null');",
+        "  err.name = 'ExitPromptError';",
+        '  inquirer.prompt = async () => { throw err; };',
+        "} else if (mode === 'force-closed') {",
+        "  inquirer.prompt = async () => { throw new Error('User force closed the prompt'); };",
+        "} else if (mode === 'other-error') {",
+        "  inquirer.prompt = async () => { throw new Error('network exploded'); };",
+        '} else {',
+        "  inquirer.prompt = async () => ({ answer: 'yes' });",
+        '}',
+        "safePrompt([{ type: 'input', name: 'answer', message: 'q?' }])",
+        "  .then((answers) => { console.log('RESOLVED:' + JSON.stringify(answers)); })",
+        "  .catch((err) => { console.error('REJECTED:' + err.message); process.exit(1); });",
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+    const runMode = (mode) => spawnSync(process.execPath, [runnerScript, mode], { encoding: 'utf8' });
+
+    // Ctrl+C via ExitPromptError (inquirer v9+) -> clean exit 130
+    const exitPrompt = runMode('exit-prompt-error');
+    assert.strictEqual(exitPrompt.status, 130, 'ExitPromptError must exit with status 130');
+    assert(
+      exitPrompt.stdout.includes('Operation cancelled.'),
+      'Cancellation must print a friendly message instead of a stack trace'
+    );
+
+    // Ctrl+C via "force closed" (inquirer v8) -> clean exit 130
+    const forceClosed = runMode('force-closed');
+    assert.strictEqual(forceClosed.status, 130, '"force closed" cancellation must exit with status 130');
+
+    // Any other error is re-thrown, never swallowed into exit 130
+    const otherError = runMode('other-error');
+    assert.strictEqual(otherError.status, 1, 'Non-cancellation errors must not exit with 130');
+    assert(
+      otherError.stderr.includes('REJECTED:network exploded'),
+      'Non-cancellation errors must be re-thrown unchanged'
+    );
+
+    // Normal answers resolve through unchanged
+    const success = runMode('success');
+    assert.strictEqual(success.status, 0, 'Successful prompts must resolve normally');
+    assert(
+      success.stdout.includes('RESOLVED:{"answer":"yes"}'),
+      'safePrompt must return the prompt answers on success'
+    );
+    console.log('  ✔ safePrompt exits 130 on Ctrl+C and passes through other outcomes.');
+  } finally {
+    fs.rmSync(safePromptDir, { recursive: true, force: true });
+  }
+
+  // Registry search: keyword filtering
+  console.log('\n▶ Test: Registry keyword filtering');
+  const sampleRegistry = [
+    { id: 'react-app', title: 'React App', description: 'Build a frontend' },
+    { id: 'express-api', title: 'Express API', description: 'REST API with Node' }
+  ];
+  assert.strictEqual(filterTemplates(sampleRegistry, 'react').length, 1, 'Keyword must match by id or title');
+  assert.strictEqual(
+    filterTemplates(sampleRegistry, 'REST').length,
+    1,
+    'Matching must ignore case and use description'
+  );
+  assert.strictEqual(filterTemplates(sampleRegistry, 'zzzz').length, 0, 'Unknown keyword must return no templates');
+  assert.strictEqual(filterTemplates(sampleRegistry).length, 2, 'Missing keyword must return every template');
+  console.log('  ✔ Keyword filtering verified.');
+
+  // Registry search: fetch success, 404, offline and timeout (mock fetch, no network needed)
+  console.log('\n▶ Test: Registry fetch error handling');
+  const okData = await fetchRegistry({
+    fetchImpl: async () => ({ ok: true, json: async () => sampleRegistry })
+  });
+  assert.strictEqual(okData.length, 2, 'Successful fetch must return the registry entries');
+
+  await assert.rejects(
+    fetchRegistry({ fetchImpl: async () => ({ ok: false, status: 404 }) }),
+    (err) => err.status === 404,
+    'A 404 response must reject with err.status 404'
+  );
+
+  await assert.rejects(
+    fetchRegistry({
+      fetchImpl: async () => {
+        throw new TypeError('fetch failed');
+      }
+    }),
+    (err) => err.name === 'TypeError' && err.status === undefined,
+    'A network failure must reject without a status'
+  );
+
+  await assert.rejects(
+    fetchRegistry({
+      timeoutMs: 20,
+      fetchImpl: (url, { signal }) =>
+        new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            const abortErr = new Error('aborted');
+            abortErr.name = 'AbortError';
+            reject(abortErr);
+          });
+        })
+    }),
+    (err) => err.name === 'AbortError',
+    'A stalled request must abort after the timeout'
+  );
+  console.log('  ✔ Registry fetch handles success, 404, offline, and timeout.');
+
+  // Test: MCP stdio server (#110)
+  console.log('\n▶ Test: MCP stdio server');
+  const { runMcpServer, handleRequest, TOOL_DEFINITIONS, PROTOCOL_VERSION } = require('../lib/mcp');
+  const { PassThrough } = require('stream');
+
+  assert.strictEqual(TOOL_DEFINITIONS.length, 4, 'MCP server must expose exactly 4 tools');
+  assert.deepStrictEqual(TOOL_DEFINITIONS.map((t) => t.name).sort(), [
+    'complete_step',
+    'get_active_prompt',
+    'get_context',
+    'get_workflow_status'
+  ]);
+  for (const tool of TOOL_DEFINITIONS) {
+    assert.strictEqual(typeof tool.description, 'string');
+    assert.strictEqual(tool.inputSchema.type, 'object');
+  }
+
+  const mcpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-mcp-'));
+  try {
+    initState(
+      {
+        projectName: 'MCP Demo',
+        templateId: 'web-app',
+        templateTitle: 'Full-Stack Web Application',
+        experienceLevel: 'Beginner',
+        projectIdea: 'A demo project.',
+        totalSteps: 6
+      },
+      mcpDir
+    );
+
+    // Unit: initialize handshake
+    const initRes = handleRequest(
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: PROTOCOL_VERSION } },
+      mcpDir
+    );
+    assert.strictEqual(initRes.result.protocolVersion, PROTOCOL_VERSION);
+    assert.deepStrictEqual(initRes.result.capabilities, { tools: {} });
+    assert.strictEqual(initRes.result.serverInfo.name, 'build-with-ai');
+
+    // Unit: notifications produce no response
+    assert.strictEqual(handleRequest({ jsonrpc: '2.0', method: 'notifications/initialized' }, mcpDir), null);
+
+    // Unit: unknown method -> Method not found
+    const unknownMethod = handleRequest({ jsonrpc: '2.0', id: 9, method: 'nope' }, mcpDir);
+    assert.strictEqual(unknownMethod.error.code, -32601);
+
+    // Unit: invalid request shape
+    const invalidReq = handleRequest([1, 2, 3], mcpDir);
+    assert.strictEqual(invalidReq.error.code, -32600);
+
+    // Unit: tools/call without an initialized project
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-mcp-empty-'));
+    try {
+      const uninit = handleRequest(
+        { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_workflow_status', arguments: {} } },
+        emptyDir
+      );
+      assert.strictEqual(uninit.result.isError, true);
+      assert(uninit.result.content[0].text.includes('npx build-with-ai init'));
+    } finally {
+      fs.rmSync(emptyDir, { recursive: true, force: true });
+    }
+
+    // End-to-end over stdio streams: full MCP session
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let outBuffer = '';
+    output.on('data', (chunk) => {
+      outBuffer += chunk.toString();
+    });
+    const serverDone = runMcpServer({ stdin: input, stdout: output, cwd: mcpDir });
+
+    const session = [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: PROTOCOL_VERSION } },
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_workflow_status', arguments: {} } },
+      { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'get_active_prompt', arguments: {} } },
+      {
+        jsonrpc: '2.0',
+        id: 5,
+        method: 'tools/call',
+        params: {
+          name: 'complete_step',
+          arguments: { decisions: { 'decisions.database': 'PostgreSQL' }, response: '# Step 1 done' }
+        }
+      },
+      { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'get_workflow_status', arguments: {} } },
+      {
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: { name: 'get_context', arguments: { key: 'decisions.database' } }
+      },
+      { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'unknown_tool', arguments: {} } }
+    ];
+    for (const message of session) {
+      input.write(`${JSON.stringify(message)}\n`);
+    }
+    input.write('this is not json\n');
+    input.end();
+    await serverDone;
+
+    const responses = outBuffer
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    // 8 request responses + 1 parse-error response; the notification gets none.
+    assert.strictEqual(responses.length, 9, 'Every request except notifications must get exactly one response');
+    const byId = Object.fromEntries(responses.filter((r) => r.id !== null).map((r) => [r.id, r]));
+
+    assert.strictEqual(byId[1].result.serverInfo.name, 'build-with-ai');
+    assert.strictEqual(byId[2].result.tools.length, 4);
+
+    const statusBefore = JSON.parse(byId[3].result.content[0].text);
+    assert.strictEqual(statusBefore.currentStep, 1);
+    assert.strictEqual(statusBefore.progressPercent, 0);
+    assert.deepStrictEqual(statusBefore.decisions, {});
+
+    const promptRes = JSON.parse(byId[4].result.content[0].text);
+    assert.strictEqual(promptRes.step, 1);
+    assert(promptRes.prompt.includes('MCP Demo'), 'Active prompt must be interpolated');
+    assert(Array.isArray(promptRes.targetFiles));
+
+    const completed = JSON.parse(byId[5].result.content[0].text);
+    assert.strictEqual(completed.completedStep, 1);
+    assert.strictEqual(completed.advancedToStep, 2);
+    assert.deepStrictEqual(completed.recordedDecisions, ['decisions.database']);
+    assert(completed.historyPath.includes('step-01.md'));
+
+    const statusAfter = JSON.parse(byId[6].result.content[0].text);
+    assert.strictEqual(statusAfter.currentStep, 2, 'complete_step must advance the workflow');
+    assert.deepStrictEqual(statusAfter.completedSteps, [1]);
+    assert.deepStrictEqual(statusAfter.decisions, { database: 'PostgreSQL' });
+
+    assert.strictEqual(byId[7].result.content[0].text, 'PostgreSQL', 'get_context key lookup works');
+    assert.strictEqual(byId[8].result.isError, true, 'Unknown tool must return isError');
+
+    const parseError = responses.find((r) => r.id === null);
+    assert.strictEqual(parseError.error.code, -32700, 'Malformed JSON must return a Parse error');
+
+    // State on disk reflects the tool-driven progression
+    assert.strictEqual(loadState(mcpDir).currentStep, 2);
+    assert.strictEqual(loadContext(mcpDir).decisions.database, 'PostgreSQL');
+    assert(
+      fs.readFileSync(path.join(mcpDir, '.buildwithai', 'history', 'step-01.md'), 'utf8').includes('# Step 1 done')
+    );
+    console.log('  ✔ MCP stdio server handles a full session: initialize, tools, state progression.');
+  } finally {
+    fs.rmSync(mcpDir, { recursive: true, force: true });
+  }
+
+  // Test: BYOK autonomous engine (#108)
+  console.log('\n▶ Test: BYOK autonomous engine');
+  const {
+    PROVIDERS,
+    resolveProviderConfig,
+    chatCompletion,
+    parseFileBlocks,
+    parseDecisions: parseAiDecisions,
+    resolveTargetPath,
+    writeFileBlocks,
+    renderDiff,
+    buildRunSystemPrompt,
+    loadDotEnv
+  } = require('../lib/aiClient');
+
+  assert.deepStrictEqual(
+    Object.keys(PROVIDERS).sort(),
+    ['anthropic', 'deepseek', 'gemini', 'groq', 'jev', 'ollama', 'openai', 'together'],
+    'All eight providers must be registered'
+  );
+  assert.strictEqual(PROVIDERS.ollama.needsKey, false, 'Ollama must not require a key');
+  assert.strictEqual(PROVIDERS.openai.needsKey, true, 'OpenAI must require a key');
+
+  // Key resolution order: --api-key flag > env var > .buildwithai/.env
+  const savedEnv = {};
+  for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY', 'BUILD_WITH_AI_PROVIDER']) {
+    savedEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+  try {
+    const defaults = resolveProviderConfig({});
+    assert.strictEqual(defaults.provider, 'openai', 'Default provider must be openai');
+    assert.strictEqual(defaults.baseUrl, 'https://api.openai.com/v1');
+    assert.strictEqual(defaults.model, 'gpt-4o-mini');
+    assert.strictEqual(defaults.apiKey, null, 'No key configured → null');
+
+    process.env.ANTHROPIC_API_KEY = 'env-key';
+    const fromFlag = resolveProviderConfig({
+      provider: 'anthropic',
+      apiKey: 'flag-key',
+      model: 'custom-model',
+      baseUrl: 'https://custom.example/v1'
+    });
+    assert.strictEqual(fromFlag.apiKey, 'flag-key', 'Flag must beat env var');
+    assert.strictEqual(fromFlag.model, 'custom-model');
+    assert.strictEqual(fromFlag.baseUrl, 'https://custom.example/v1');
+    assert.strictEqual(fromFlag.kind, 'anthropic');
+
+    const fromEnv = resolveProviderConfig({ provider: 'anthropic' });
+    assert.strictEqual(fromEnv.apiKey, 'env-key', 'Env var must be picked up');
+    assert.strictEqual(fromEnv.model, 'claude-haiku-4-6');
+
+    const dotenvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-dotenv-'));
+    try {
+      fs.mkdirSync(path.join(dotenvDir, '.buildwithai'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dotenvDir, '.buildwithai', '.env'),
+        '# comment line\nDEEPSEEK_API_KEY="dotenv-key"\n\nMALFORMED\n'
+      );
+      const fromDotenv = resolveProviderConfig({ provider: 'deepseek', cwd: dotenvDir });
+      assert.strictEqual(fromDotenv.apiKey, 'dotenv-key', '.env value must be picked up (quotes stripped)');
+      assert.deepStrictEqual(loadDotEnv(dotenvDir).DEEPSEEK_API_KEY, 'dotenv-key');
+    } finally {
+      fs.rmSync(dotenvDir, { recursive: true, force: true });
+    }
+    assert.deepStrictEqual(loadDotEnv('/nonexistent-dir-xyz'), {}, 'Missing .env must yield {}');
+
+    assert.throws(() => resolveProviderConfig({ provider: 'nope' }), /Unknown provider/, 'Unknown provider must throw');
+    assert.throws(
+      () => resolveProviderConfig({ provider: 'jev' }),
+      /needs a base URL/,
+      'JEV without JEV_BASE_URL must throw'
+    );
+    process.env.JEV_BASE_URL = 'https://jev.example/api';
+    try {
+      const jev = resolveProviderConfig({ provider: 'jev', apiKey: 'k' });
+      assert.strictEqual(jev.baseUrl, 'https://jev.example/api');
+      assert.strictEqual(jev.kind, 'openai', 'JEV uses the OpenAI-compatible protocol');
+    } finally {
+      delete process.env.JEV_BASE_URL;
+    }
+  } finally {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  console.log('  ✔ Provider config resolves with flag > env > .env precedence.');
+
+  // chatCompletion: mocked network for every protocol (no real calls)
+  const calls = [];
+  const mockFetch =
+    (responseBody, { ok = true, status = 200 } = {}) =>
+    async (url, init) => {
+      calls.push({ url, init });
+      return {
+        ok,
+        status,
+        text: async () => (typeof responseBody === 'string' ? responseBody : JSON.stringify(responseBody))
+      };
+    };
+  const messages = [
+    { role: 'system', content: 'Be terse.' },
+    { role: 'user', content: 'Hello' }
+  ];
+
+  calls.length = 0;
+  const openaiText = await chatCompletion(
+    { kind: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', apiKey: 'k' },
+    messages,
+    { fetchImpl: mockFetch({ choices: [{ message: { content: 'hi' } }] }) }
+  );
+  assert.strictEqual(openaiText, 'hi');
+  assert.ok(calls[0].url.endsWith('/chat/completions'), 'OpenAI-compatible path');
+  assert.strictEqual(calls[0].init.headers.authorization, 'Bearer k');
+  assert.strictEqual(JSON.parse(calls[0].init.body).model, 'gpt-4o-mini');
+
+  calls.length = 0;
+  await chatCompletion(
+    { kind: 'openai', baseUrl: 'http://localhost:11434/v1', model: 'llama3.1', apiKey: null },
+    messages,
+    { fetchImpl: mockFetch({ choices: [{ message: { content: 'local hi' } }] }) }
+  );
+  assert.strictEqual(calls[0].init.headers.authorization, undefined, 'Ollama sends no auth header without a key');
+
+  calls.length = 0;
+  const anthropicText = await chatCompletion(
+    { kind: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-haiku-4-6', apiKey: 'ak' },
+    messages,
+    { fetchImpl: mockFetch({ content: [{ type: 'text', text: 'claude says hi' }] }) }
+  );
+  assert.strictEqual(anthropicText, 'claude says hi');
+  assert.ok(calls[0].url.endsWith('/messages'), 'Anthropic path');
+  assert.strictEqual(calls[0].init.headers['x-api-key'], 'ak');
+  assert.strictEqual(calls[0].init.headers['anthropic-version'], '2023-06-01');
+  const anthropicBody = JSON.parse(calls[0].init.body);
+  assert.strictEqual(anthropicBody.system, 'Be terse.', 'System prompt must be extracted');
+  assert.strictEqual(anthropicBody.messages.length, 1, 'Only non-system messages are sent');
+
+  calls.length = 0;
+  const geminiText = await chatCompletion(
+    {
+      kind: 'gemini',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      model: 'gemini-2.5-flash',
+      apiKey: 'gk'
+    },
+    messages,
+    {
+      fetchImpl: mockFetch({
+        candidates: [{ content: { parts: [{ text: 'gemini says hi' }] } }]
+      })
+    }
+  );
+  assert.strictEqual(geminiText, 'gemini says hi');
+  assert.ok(calls[0].url.includes(':generateContent'), 'Gemini path');
+  assert.ok(calls[0].url.includes('gemini-2.5-flash'), 'Gemini model in URL');
+  assert.strictEqual(calls[0].init.headers['x-goog-api-key'], 'gk');
+  const geminiBody = JSON.parse(calls[0].init.body);
+  assert.strictEqual(geminiBody.systemInstruction.parts[0].text, 'Be terse.');
+  assert.strictEqual(geminiBody.contents[0].role, 'user');
+
+  await assert.rejects(
+    chatCompletion({ kind: 'openai', baseUrl: 'https://x', model: 'm', apiKey: 'k' }, messages, {
+      fetchImpl: mockFetch({ error: 'nope' }, { ok: false, status: 401 })
+    }),
+    /HTTP 401/,
+    'HTTP errors must reject with the status'
+  );
+  await assert.rejects(
+    chatCompletion({ kind: 'openai', baseUrl: 'https://x', model: 'm', apiKey: 'k' }, messages, {
+      fetchImpl: mockFetch('not json{{{')
+    }),
+    /Invalid JSON/,
+    'Non-JSON bodies must reject'
+  );
+  console.log('  ✔ chatCompletion speaks OpenAI, Anthropic, Gemini and Ollama protocols (mocked).');
+
+  // Parsing: file blocks + decisions
+  const sample = [
+    'Here you go.',
+    '```src/app.js',
+    "console.log('a');",
+    '```',
+    '```decisions',
+    '{ "decisions.database": "PostgreSQL" }',
+    '```',
+    '```src/app.js',
+    "console.log('b');",
+    '```'
+  ].join('\n');
+  const blocks = parseFileBlocks(sample);
+  assert.strictEqual(blocks.length, 1, 'Duplicate paths collapse to one block');
+  assert.strictEqual(blocks[0].path, 'src/app.js');
+  assert.strictEqual(blocks[0].content, "console.log('b');", 'Last block wins, trailing newline stripped');
+  assert.deepStrictEqual(parseAiDecisions(sample), { 'decisions.database': 'PostgreSQL' });
+  assert.deepStrictEqual(parseAiDecisions('no blocks here'), {}, 'Missing decisions block → {}');
+  assert.throws(() => parseAiDecisions('```decisions\n{bad json}\n```'), /Could not parse/, 'Bad JSON must throw');
+  assert.throws(() => parseAiDecisions('```decisions\n[1,2]\n```'), /must be a JSON object/, 'Non-object must throw');
+  console.log('  ✔ File-block and decisions parsing.');
+
+  // Safe paths: traversal and absolute paths are rejected
+  const safeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-aiclient-'));
+  try {
+    assert.strictEqual(resolveTargetPath(safeDir, '../evil.js'), null, 'Path traversal rejected');
+    assert.strictEqual(resolveTargetPath(safeDir, '/abs/path.js'), null, 'Absolute path rejected');
+    assert.strictEqual(resolveTargetPath(safeDir, ''), null, 'Empty path rejected');
+    assert.strictEqual(resolveTargetPath(safeDir, 'src/app.js'), path.join(safeDir, 'src', 'app.js'));
+
+    const results = writeFileBlocks(safeDir, [
+      { path: 'src/app.js', content: "console.log('hi');\n" },
+      { path: '../evil.js', content: 'evil' }
+    ]);
+    assert.strictEqual(results[0].written, true);
+    assert.strictEqual(results[0].created, true);
+    assert.strictEqual(results[1].written, false, 'Unsafe block is skipped, never written');
+    assert.ok(results[1].skipped.includes('unsafe'));
+    assert.strictEqual(fs.readFileSync(path.join(safeDir, 'src', 'app.js'), 'utf8'), "console.log('hi');\n");
+    assert.ok(!fs.existsSync(path.join(os.tmpdir(), 'evil.js')), 'Traversal file must not exist');
+
+    const diff = renderDiff('line1\nline2\nline3\n', 'line1\nCHANGED\nline3\n', { color: false });
+    assert.ok(diff.includes('- line2'), 'Removed line marked');
+    assert.ok(diff.includes('+ CHANGED'), 'Added line marked');
+    assert.ok(diff.includes('  line1'), 'Context lines kept');
+
+    const system = buildRunSystemPrompt({ stepNum: 2, totalSteps: 5, targetFiles: ['src/app.js'] });
+    assert.ok(system.includes('step 2 of 5'));
+    assert.ok(system.includes('src/app.js'));
+  } finally {
+    fs.rmSync(safeDir, { recursive: true, force: true });
+  }
+  console.log('  ✔ Safe file writing and diff rendering.');
+
+  // initState gitignores the BYOK .env file
+  const initDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-init-'));
+  try {
+    initState(
+      {
+        projectName: 'BYOK Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Beginner',
+        projectIdea: 'Demo.',
+        totalSteps: 3
+      },
+      initDir
+    );
+    const gitignore = fs.readFileSync(path.join(initDir, '.buildwithai', '.gitignore'), 'utf8');
+    assert.ok(gitignore.includes('.env'), '.buildwithai/.gitignore must ignore .env');
+  } finally {
+    fs.rmSync(initDir, { recursive: true, force: true });
+  }
+  console.log('  ✔ initState gitignores .buildwithai/.env.');
+
+  // Cleanup temp dir
+  fs.rmSync(tempDir, { recursive: true, force: true });
+  console.log('\n🎉 ALL TESTS PASSED SUCCESSFULLY! ✅\n');
+}
+
+runTests().catch((err) => {
+  console.error('❌ Test failed:', err);
+  process.exit(1);
+});
