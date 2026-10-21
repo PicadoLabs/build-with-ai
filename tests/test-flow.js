@@ -525,6 +525,48 @@ async function runTests() {
     );
   }
   assert.strictEqual(setByPath(null, 'decisions.database', 'SQLite'), false);
+  for (const invalidPath of [
+    '',
+    '   ',
+    '.',
+    '.key',
+    'decisions.',
+    'decisions..key',
+    ' decisions..key ',
+    42,
+    true,
+    {},
+    []
+  ]) {
+    const target = { decisions: { database: 'SQLite' } };
+    assert.strictEqual(setByPath(target, invalidPath, 'changed'), false);
+    assert.deepStrictEqual(target, { decisions: { database: 'SQLite' } });
+    assert.strictEqual(getByPath(target, invalidPath), undefined);
+  }
+  const validPathTarget = {};
+  assert.strictEqual(setByPath(validPathTarget, ' decisions.database ', 'SQLite'), true);
+  assert.strictEqual(getByPath(validPathTarget, ' decisions.database '), 'SQLite');
+
+  const invalidPathDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-invalid-path-'));
+  try {
+    saveState({ templateId: 'web-app', currentStep: 1 }, invalidPathDir);
+    saveContext({ decisions: { database: 'SQLite' } }, invalidPathDir);
+    const contextPath = path.join(getStorageDir(invalidPathDir), 'context.json');
+    const originalContext = fs.readFileSync(contextPath, 'utf8');
+    for (const key of ['', '   ', '.key', 'decisions.', 'decisions..key']) {
+      const result = spawnSync(process.execPath, [path.join(__dirname, '..', 'bin', 'cli.js'), 'set', key, 'changed'], {
+        cwd: invalidPathDir,
+        encoding: 'utf8',
+        timeout: 10000
+      });
+      assert.ifError(result.error);
+      assert.strictEqual(result.status, 1);
+      assert((result.stdout + result.stderr).includes('Cannot set'));
+      assert.strictEqual(fs.readFileSync(contextPath, 'utf8'), originalContext);
+    }
+  } finally {
+    fs.rmSync(invalidPathDir, { recursive: true, force: true });
+  }
   console.log('Context path edge cases passed.');
 
   const remoteData = { type: 'remote-test', title: 'Remote test', steps: [{ id: 'first', prompt: 'test prompt' }] };

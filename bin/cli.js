@@ -906,7 +906,7 @@ program
     }
     if (!setByPath(context, key, parsedValue)) {
       logger.error(
-        `Cannot set "${key}": the key is empty or contains a reserved segment ("__proto__", "prototype" or "constructor").`
+        `Cannot set "${key}": the key is empty or contains an empty or reserved segment ("__proto__", "prototype" or "constructor").`
       );
       process.exit(1);
     }
