@@ -861,6 +861,28 @@ async function runTests() {
 
   // Non-array write keys are treated as no keys
   assert.deepStrictEqual(parseDecisions('Database: X', null), { found: {}, missing: [] });
+
+  // ```decisions JSON block takes precedence over line-by-line heuristics (#145)
+  const blockText = [
+    '# Tech Stack Recommendation',
+    '```decisions',
+    '{ "decisions.database": "PostgreSQL", "decisions.framework": "Next.js" }',
+    '```',
+    'Database: MySQL'
+  ].join('\n');
+  const blocked = parseDecisions(blockText, ['decisions.database', 'decisions.framework', 'decisions.auth']);
+  assert.strictEqual(
+    blocked.found['decisions.database'],
+    'PostgreSQL',
+    'JSON block value wins over line-by-line match'
+  );
+  assert.strictEqual(blocked.found['decisions.framework'], 'Next.js');
+  assert.deepStrictEqual(blocked.missing, ['decisions.auth'], 'Keys missing from the block still report as missing');
+
+  // A malformed ```decisions block falls back to line-by-line parsing
+  const malformed = parseDecisions('```decisions\n{bad json}\n```\nDatabase: MySQL', ['decisions.database']);
+  assert.strictEqual(malformed.found['decisions.database'], 'MySQL', 'Malformed block falls back to heuristics');
+
   console.log('  ✔ Heuristic decision parsing extracts values and reports missing keys.');
 
   // Test 5: Simulating Step 1 Completion (`done`)
@@ -2002,7 +2024,7 @@ async function runTests() {
     resolveProviderConfig,
     chatCompletion,
     parseFileBlocks,
-    parseDecisions: parseAiDecisions,
+    parseDecisionsBlock: parseAiDecisions,
     resolveTargetPath,
     writeFileBlocks,
     renderDiff,

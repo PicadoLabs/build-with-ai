@@ -152,7 +152,7 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
     resolveProviderConfig,
     chatCompletion,
     parseFileBlocks,
-    parseDecisions,
+    parseDecisionsBlock,
     resolveTargetPath,
     writeFileBlocks,
     renderDiff,
@@ -255,7 +255,7 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
   // 2. Decisions → context.
   const recorded = [];
   try {
-    const decisions = parseDecisions(response);
+    const decisions = parseDecisionsBlock(response);
     for (const [key, value] of Object.entries(decisions)) {
       if (typeof key === 'string' && key.trim() && setByPath(context, key, value)) {
         recorded.push(key);
