@@ -676,7 +676,9 @@ async function executeFullE2ETest() {
           encoding: 'utf8'
         });
       const previewOutput = preview();
-      for (const file of ['README.md', 'BUILD_LOG.md', '.buildwithai/CONTEXT.md']) {
+      // With a custom outDir, CONTEXT.md is written directly into it (#149) —
+      // no redundant `.buildwithai` directory is created.
+      for (const file of ['README.md', 'BUILD_LOG.md', 'CONTEXT.md']) {
         assert(
           previewOutput.includes(path.relative(testDir, path.join(outputDir, file))),
           'Dry run lists custom output paths'
@@ -684,13 +686,17 @@ async function executeFullE2ETest() {
       }
       assert(!fs.existsSync(outputDir), 'Dry run does not create the output directory');
       execFileSync(process.execPath, [CLI_BIN, 'export', flag, target], { cwd: testDir });
+      assert(
+        !fs.existsSync(path.join(outputDir, '.buildwithai')),
+        'Custom outDir export does not create a redundant .buildwithai directory'
+      );
       assert.strictEqual(fs.readFileSync(path.join(outputDir, 'README.md'), 'utf8'), readmeContent);
       assert(fs.readFileSync(path.join(outputDir, 'BUILD_LOG.md'), 'utf8').includes('### MVP Specification'));
       assert.strictEqual(
-        withoutExportTimestamp(fs.readFileSync(path.join(outputDir, '.buildwithai', 'CONTEXT.md'), 'utf8')),
+        withoutExportTimestamp(fs.readFileSync(path.join(outputDir, 'CONTEXT.md'), 'utf8')),
         withoutExportTimestamp(contextMdContent)
       );
-      const exportedFiles = ['README.md', 'BUILD_LOG.md', '.buildwithai/CONTEXT.md'];
+      const exportedFiles = ['README.md', 'BUILD_LOG.md', 'CONTEXT.md'];
       const beforePreview = exportedFiles.map((file) => fs.readFileSync(path.join(outputDir, file), 'utf8'));
       const beforeTimes = exportedFiles.map((file) => fs.statSync(path.join(outputDir, file)).mtimeMs);
       preview();
