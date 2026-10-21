@@ -1995,6 +1995,57 @@ async function runTests() {
     fs.rmSync(mcpDir, { recursive: true, force: true });
   }
 
+  // Test: MCP complete_step snapshots the step for undo (#136)
+  console.log('\n▶ Test: MCP complete_step creates an undo snapshot');
+  const mcpUndoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-mcp-undo-'));
+  try {
+    initState(
+      {
+        projectName: 'MCP Undo Demo',
+        templateId: 'web-app',
+        templateTitle: 'Full-Stack Web Application',
+        experienceLevel: 'Beginner',
+        projectIdea: 'A demo project.',
+        totalSteps: 4
+      },
+      mcpUndoDir
+    );
+    saveContext({ project: { name: 'MCP Undo Demo' }, decisions: { database: 'SQLite' } }, mcpUndoDir);
+
+    const doneRes = handleRequest(
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'complete_step', arguments: { decisions: { 'decisions.auth': 'JWT' } } }
+      },
+      mcpUndoDir
+    );
+    const done = JSON.parse(doneRes.result.content[0].text);
+    assert.strictEqual(done.completedStep, 1);
+    assert.strictEqual(loadState(mcpUndoDir).currentStep, 2);
+
+    assert.strictEqual(
+      fs.existsSync(path.join(mcpUndoDir, '.buildwithai', 'snapshots', 'step-01.json')),
+      true,
+      'MCP complete_step must create a snapshot in .buildwithai/snapshots/'
+    );
+
+    const undone = undoLastStep(mcpUndoDir);
+    assert.strictEqual(undone.step, 1, 'undo must target the MCP-completed step');
+    const restored = loadState(mcpUndoDir);
+    assert.strictEqual(restored.currentStep, 1, 'step counter must roll back to 1');
+    assert.deepStrictEqual(restored.completedSteps, [], 'completed step must be rolled back');
+    assert.strictEqual(
+      loadContext(mcpUndoDir).decisions.database,
+      'SQLite',
+      'pre-step context decisions must be restored'
+    );
+    console.log('  ✔ MCP complete_step snapshots the step and undoLastStep() rolls it back.');
+  } finally {
+    fs.rmSync(mcpUndoDir, { recursive: true, force: true });
+  }
+
   // Test: BYOK autonomous engine (#108)
   console.log('\n▶ Test: BYOK autonomous engine');
   const {
