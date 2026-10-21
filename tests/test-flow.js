@@ -465,7 +465,8 @@ async function runTests() {
   const flattenInput = { decisions: { options: { retries: 0 }, providers: arrayValue, empty: {} } };
   assert.deepStrictEqual(flattenObject(flattenInput), {
     'decisions.options.retries': 0,
-    'decisions.providers': [{ enabled: false }, ['nested', 0]]
+    'decisions.providers': [{ enabled: false }, ['nested', 0]],
+    'decisions.empty': {}
   });
   assert.strictEqual(flattenObject(flattenInput)['decisions.providers'], arrayValue, 'Nested arrays remain intact');
   assert.deepStrictEqual(flattenObject({ options: { enabled: false } }, 'project'), {
