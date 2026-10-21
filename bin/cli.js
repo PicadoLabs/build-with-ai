@@ -286,6 +286,325 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
 }
 
 // ─────────────────────────────────────────────────
+// Shared command controllers (#144).
+// Each subcommand's action handler and the default interactive launcher
+// call the same controller, so the menu can no longer drift out of sync
+// with the direct CLI invocations (e.g. BUILD_WITH_AI_NO_COPY, --run,
+// deduplicated status logic).
+// ─────────────────────────────────────────────────
+
+async function runNextCommand(options = {}) {
+  if (!isInitialized()) {
+    logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
+    process.exit(1);
+  }
+
+  const state = loadState();
+  const context = loadContext();
+  const template = getTemplate(state.templateId);
+
+  if (!template) {
+    logger.error(
+      `Template "${state.templateId}" not found. Run \`npx build-with-ai list\` to view available templates.`
+    );
+    process.exit(1);
+  }
+
+  const totalSteps = template.steps ? template.steps.length : 0;
+  const currentStepNum = state.currentStep || 1;
+
+  if (currentStepNum > totalSteps) {
+    if (options.raw) {
+      console.log('');
+      return;
+    }
+    console.log();
+    logger.success(pc.bold('All steps in this template are complete!'));
+    console.log();
+    console.log(
+      pc.cyan('Run ') +
+        pc.bold(pc.green('npx build-with-ai export')) +
+        pc.cyan(' to generate your README, BUILD_LOG, and CONTEXT documentation.')
+    );
+    console.log();
+    return;
+  }
+
+  const currentStep = template.steps[currentStepNum - 1];
+  const { resolvedPrompt, warnings, targetFiles, recommendedAI } = resolveStepPrompt(currentStep, context);
+
+  // BYOK autonomous mode: dispatch the prompt to the model, apply the
+  // returned file blocks + decisions, and advance (#108)
+  if (options.run) {
+    await runAutonomousStep({
+      state,
+      context,
+      totalSteps,
+      currentStepNum,
+      resolvedPrompt,
+      targetFiles,
+      options
+    });
+    return;
+  }
+
+  // --json mode
+  if (options.json) {
+    const output = {
+      step: currentStepNum,
+      totalSteps,
+      title: currentStep.title,
+      phase: currentStep.phase || '',
+      goal: currentStep.goal,
+      expectedOutput: currentStep.expectedOutput,
+      recommendedAI,
+      targetFiles,
+      warnings,
+      prompt: resolvedPrompt
+    };
+    console.log(JSON.stringify(output, null, 2));
+    return;
+  }
+
+  // --raw mode: print only the prompt string
+  if (options.raw) {
+    console.log(resolvedPrompt);
+    return;
+  }
+
+  // Standard display
+  displayStep({
+    stepNum: currentStepNum,
+    totalSteps,
+    title: currentStep.title,
+    phase: currentStep.phase || '',
+    goal: currentStep.goal,
+    expectedOutput: currentStep.expectedOutput,
+    prompt: resolvedPrompt,
+    warnings,
+    targetFiles,
+    recommendedAI
+  });
+
+  const skipCopy = options.copy === false || process.env.BUILD_WITH_AI_NO_COPY === '1';
+  const copied = skipCopy ? false : await copyToClipboard(resolvedPrompt);
+  console.log();
+  if (skipCopy) {
+    console.log(pc.dim('Clipboard copy skipped.'));
+  } else if (copied) {
+    console.log(pc.green(pc.bold('Prompt copied to clipboard')));
+  } else {
+    console.log(pc.yellow('Copy the prompt above and paste it into your AI assistant.'));
+  }
+  console.log();
+  console.log(pc.dim('When done with your AI conversation, run: ') + pc.bold(pc.cyan('npx build-with-ai done')));
+  console.log();
+}
+
+async function runJumpCommand(stepNumber) {
+  if (!isInitialized()) {
+    logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
+    process.exit(1);
+  }
+
+  const state = loadState();
+  const template = getTemplate(state.templateId);
+  const totalSteps = template ? template.steps.length : state.totalSteps || 0;
+
+  let target;
+
+  if (stepNumber !== undefined) {
+    target = Number(stepNumber);
+  } else {
+    // Interactive step picker
+    if (!template || !template.steps) {
+      logger.error('Template not found. Cannot list steps.');
+      process.exit(1);
+    }
+    const { picked } = await safePrompt([
+      {
+        type: 'list',
+        name: 'picked',
+        message: 'Select a step to jump to:',
+        choices: template.steps.map((s, idx) => {
+          const num = idx + 1;
+          const isDone = (state.completedSteps || []).includes(num);
+          const isCurrent = state.currentStep === num;
+          const icon = isDone ? pc.green('✔') : isCurrent ? pc.cyan('➤') : pc.dim('○');
+          return {
+            name: `${icon} Step ${num}: ${s.title} [${s.phase || 'General'}]`,
+            value: num
+          };
+        })
+      }
+    ]);
+    target = picked;
+  }
+
+  if (!Number.isInteger(target) || target < 1 || target > totalSteps) {
+    logger.error(`Invalid step number. Must be between 1 and ${totalSteps}.`);
+    process.exit(1);
+  }
+
+  state.currentStep = target;
+  saveState(state);
+
+  console.log();
+  logger.success(`Jumped to Step ${target}/${totalSteps}.`);
+  console.log(pc.dim('History and context decisions are intact.'));
+  console.log(
+    pc.cyan('Run ') + pc.bold(pc.green('npx build-with-ai next')) + pc.cyan(" to generate this step's prompt.")
+  );
+  console.log();
+}
+
+function runContextCommand(key) {
+  if (!isInitialized()) {
+    logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
+    process.exit(1);
+  }
+
+  const context = loadContext();
+
+  if (key) {
+    const val = getByPath(context, key);
+    if (val === undefined || val === null) {
+      logger.warn(`No value found for key "${key}" in context.json.`);
+    } else {
+      console.log();
+      console.log(`${pc.bold(pc.cyan(key))}: ${typeof val === 'object' ? JSON.stringify(val, null, 2) : val}`);
+      console.log();
+    }
+    return;
+  }
+
+  // Show all decisions
+  const flat = flattenObject(context);
+  const entries = Object.entries(flat);
+
+  console.log();
+  console.log(pc.bold(pc.cyan('RECORDED CONTEXT DECISIONS:')));
+  console.log(pc.dim('─'.repeat(55)));
+
+  if (entries.length === 0) {
+    console.log(pc.dim('No decisions recorded yet. Run `npx build-with-ai done` after completing a step.'));
+  } else {
+    for (const [k, v] of entries) {
+      const valStr = typeof v === 'object' ? JSON.stringify(v) : String(v);
+      const truncated = valStr.length > 90 ? valStr.substring(0, 87) + '...' : valStr;
+      console.log(`  ${pc.dim('•')} ${pc.bold(k)}: ${truncated}`);
+    }
+  }
+  console.log();
+  console.log(pc.dim('Tip: Use `npx build-with-ai set <key> <value>` to update any decision.'));
+  console.log();
+}
+
+function runStatusCommand(options = {}) {
+  if (!isInitialized()) {
+    logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
+    process.exit(1);
+  }
+
+  const state = loadState();
+  const context = loadContext();
+  const template = getTemplate(state.templateId);
+
+  const totalSteps = template ? template.steps.length : state.totalSteps || 0;
+  const currentStepNum = state.currentStep || 1;
+  const completedList = state.completedSteps || [];
+  const completedSteps = new Set(
+    completedList.filter((step) => Number.isInteger(step) && step >= 1 && step <= totalSteps)
+  );
+  const exportReady = totalSteps > 0 && completedSteps.size === totalSteps;
+  const decisions = context.decisions || {};
+
+  if (options.json) {
+    const output = {
+      projectName: state.projectName,
+      templateId: state.templateId,
+      templateTitle: state.templateTitle || state.templateId,
+      experienceLevel: state.experienceLevel,
+      projectIdea: state.projectIdea,
+      startedAt: state.startedAt || null,
+      updatedAt: state.updatedAt || null,
+      currentStep: currentStepNum,
+      totalSteps,
+      completedSteps: completedList,
+      completedCount: completedSteps.size,
+      progressPercent: totalSteps > 0 ? Math.round((completedSteps.size / totalSteps) * 100) : 0,
+      exportReady,
+      decisions
+    };
+    console.log(JSON.stringify(output, null, 2));
+    return;
+  }
+
+  console.log();
+  console.log(pc.bold(pc.cyan(`PROJECT STATUS: ${state.projectName}`)));
+  console.log(pc.dim('─'.repeat(55)));
+  console.log(`${pc.bold('Template:')} ${state.templateTitle || state.templateId}`);
+  console.log(`${pc.bold('Experience:')} ${state.experienceLevel}`);
+  console.log(`${pc.bold('Idea:')} ${state.projectIdea}`);
+  console.log(`${pc.bold('Progress:')} ${renderProgressBar(completedList.length, totalSteps)}`);
+  const now = Date.now();
+  const updatedAge = formatElapsedTime(state.updatedAt, now);
+  console.log(`${pc.bold('Time Elapsed:')} ${formatElapsedTime(state.startedAt, now)}`);
+  console.log(`${pc.bold('Last Updated:')} ${updatedAge === 'Unknown' ? updatedAge : `${updatedAge} ago`}`);
+  console.log(`${pc.bold('Decisions Count:')} ${Object.keys(flattenObject(context.decisions || {})).length}`);
+  console.log(`${pc.bold('Export Readiness:')} ${exportReady ? 'Ready' : 'In progress'}`);
+  console.log();
+
+  if (template && template.steps) {
+    console.log(pc.bold('WORKFLOW STEPS:'));
+    template.steps.forEach((step, idx) => {
+      const stepNum = idx + 1;
+      let prefix;
+      let titleFormatted;
+
+      if (completedList.includes(stepNum)) {
+        prefix = pc.green('  ✔');
+        titleFormatted = pc.dim(`${stepNum}. ${step.title} [${step.phase || 'General'}]`);
+      } else if (stepNum === currentStepNum) {
+        prefix = pc.cyan('  ➤');
+        titleFormatted = pc.bold(pc.cyan(`${stepNum}. ${step.title} [${step.phase || 'General'}] (Current)`));
+      } else {
+        prefix = pc.dim('  ○');
+        titleFormatted = pc.dim(`${stepNum}. ${step.title} [${step.phase || 'General'}]`);
+      }
+      console.log(`${prefix} ${titleFormatted}`);
+    });
+    console.log();
+  }
+
+  const entries = Object.entries(decisions);
+  if (entries.length > 0) {
+    console.log(pc.bold(pc.magenta('RECORDED DECISIONS:')));
+    for (const [k, v] of entries) {
+      const label = k.replace(/([A-Z])/g, ' $1').replace(/^./, (str) => str.toUpperCase());
+      const valStr = typeof v === 'object' ? JSON.stringify(v) : String(v);
+      console.log(`  ${pc.dim('•')} ${pc.bold(label)}: ${valStr}`);
+    }
+    console.log();
+  }
+
+  console.log(pc.dim('Tip: Use `npx build-with-ai set <key> <value>` to update any recorded decision.'));
+  console.log();
+}
+
+async function runExportCommand(options = {}) {
+  if (!isInitialized()) {
+    logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
+    process.exit(1);
+  }
+  if (options.rules) {
+    if ((await runRulesExport(process.cwd(), options)) === false) process.exitCode = 1;
+    return;
+  }
+  if ((await runExport(process.cwd(), options)) === false) process.exitCode = 1;
+}
+
+// ─────────────────────────────────────────────────
 // 2. `next` command
 // ─────────────────────────────────────────────────
 program
@@ -307,111 +626,7 @@ program
   .option('--base-url <url>', 'API base URL override for --run')
   .option('--review', 'With --run: show a colored diff of the proposed file changes and confirm before applying')
   .action(async (options) => {
-    if (!isInitialized()) {
-      logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
-      process.exit(1);
-    }
-
-    const state = loadState();
-    const context = loadContext();
-    const template = getTemplate(state.templateId);
-
-    if (!template) {
-      logger.error(
-        `Template "${state.templateId}" not found. Run \`npx build-with-ai list\` to view available templates.`
-      );
-      process.exit(1);
-    }
-
-    const totalSteps = template.steps ? template.steps.length : 0;
-    const currentStepNum = state.currentStep || 1;
-
-    if (currentStepNum > totalSteps) {
-      if (options.raw) {
-        console.log('');
-        return;
-      }
-      console.log();
-      logger.success(pc.bold('All steps in this template are complete!'));
-      console.log();
-      console.log(
-        pc.cyan('Run ') +
-          pc.bold(pc.green('npx build-with-ai export')) +
-          pc.cyan(' to generate your README, BUILD_LOG, and CONTEXT documentation.')
-      );
-      console.log();
-      return;
-    }
-
-    const currentStep = template.steps[currentStepNum - 1];
-    const { resolvedPrompt, warnings, targetFiles, recommendedAI } = resolveStepPrompt(currentStep, context);
-
-    // BYOK autonomous mode: dispatch the prompt to the model, apply the
-    // returned file blocks + decisions, and advance (#108)
-    if (options.run) {
-      await runAutonomousStep({
-        state,
-        context,
-        totalSteps,
-        currentStepNum,
-        resolvedPrompt,
-        targetFiles,
-        options
-      });
-      return;
-    }
-
-    // --json mode
-    if (options.json) {
-      const output = {
-        step: currentStepNum,
-        totalSteps,
-        title: currentStep.title,
-        phase: currentStep.phase || '',
-        goal: currentStep.goal,
-        expectedOutput: currentStep.expectedOutput,
-        recommendedAI,
-        targetFiles,
-        warnings,
-        prompt: resolvedPrompt
-      };
-      console.log(JSON.stringify(output, null, 2));
-      return;
-    }
-
-    // --raw mode: print only the prompt string
-    if (options.raw) {
-      console.log(resolvedPrompt);
-      return;
-    }
-
-    // Standard display
-    displayStep({
-      stepNum: currentStepNum,
-      totalSteps,
-      title: currentStep.title,
-      phase: currentStep.phase || '',
-      goal: currentStep.goal,
-      expectedOutput: currentStep.expectedOutput,
-      prompt: resolvedPrompt,
-      warnings,
-      targetFiles,
-      recommendedAI
-    });
-
-    const skipCopy = options.copy === false || process.env.BUILD_WITH_AI_NO_COPY === '1';
-    const copied = skipCopy ? false : await copyToClipboard(resolvedPrompt);
-    console.log();
-    if (skipCopy) {
-      console.log(pc.dim('Clipboard copy skipped.'));
-    } else if (copied) {
-      console.log(pc.green(pc.bold('Prompt copied to clipboard')));
-    } else {
-      console.log(pc.yellow('Copy the prompt above and paste it into your AI assistant.'));
-    }
-    console.log();
-    console.log(pc.dim('When done with your AI conversation, run: ') + pc.bold(pc.cyan('npx build-with-ai done')));
-    console.log();
+    await runNextCommand(options);
   });
 
 // ─────────────────────────────────────────────────
@@ -780,60 +995,7 @@ program
   .command('jump [stepNumber]')
   .description('Jump directly to any step number (preserves history and context).')
   .action(async (stepNumber) => {
-    if (!isInitialized()) {
-      logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
-      process.exit(1);
-    }
-
-    const state = loadState();
-    const template = getTemplate(state.templateId);
-    const totalSteps = template ? template.steps.length : state.totalSteps || 0;
-
-    let target;
-
-    if (stepNumber !== undefined) {
-      target = Number(stepNumber);
-    } else {
-      // Interactive step picker
-      if (!template || !template.steps) {
-        logger.error('Template not found. Cannot list steps.');
-        process.exit(1);
-      }
-      const { picked } = await safePrompt([
-        {
-          type: 'list',
-          name: 'picked',
-          message: 'Select a step to jump to:',
-          choices: template.steps.map((s, idx) => {
-            const num = idx + 1;
-            const isDone = (state.completedSteps || []).includes(num);
-            const isCurrent = state.currentStep === num;
-            const icon = isDone ? pc.green('✔') : isCurrent ? pc.cyan('➤') : pc.dim('○');
-            return {
-              name: `${icon} Step ${num}: ${s.title} [${s.phase || 'General'}]`,
-              value: num
-            };
-          })
-        }
-      ]);
-      target = picked;
-    }
-
-    if (!Number.isInteger(target) || target < 1 || target > totalSteps) {
-      logger.error(`Invalid step number. Must be between 1 and ${totalSteps}.`);
-      process.exit(1);
-    }
-
-    state.currentStep = target;
-    saveState(state);
-
-    console.log();
-    logger.success(`Jumped to Step ${target}/${totalSteps}.`);
-    console.log(pc.dim('History and context decisions are intact.'));
-    console.log(
-      pc.cyan('Run ') + pc.bold(pc.green('npx build-with-ai next')) + pc.cyan(" to generate this step's prompt.")
-    );
-    console.log();
+    await runJumpCommand(stepNumber);
   });
 
 // ─────────────────────────────────────────────────
@@ -843,45 +1005,7 @@ program
   .command('context [key]')
   .description('View recorded context decisions. Optionally pass a dot-notation key to look up a specific value.')
   .action((key) => {
-    if (!isInitialized()) {
-      logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
-      process.exit(1);
-    }
-
-    const context = loadContext();
-
-    if (key) {
-      const val = getByPath(context, key);
-      if (val === undefined || val === null) {
-        logger.warn(`No value found for key "${key}" in context.json.`);
-      } else {
-        console.log();
-        console.log(`${pc.bold(pc.cyan(key))}: ${typeof val === 'object' ? JSON.stringify(val, null, 2) : val}`);
-        console.log();
-      }
-      return;
-    }
-
-    // Show all decisions
-    const flat = flattenObject(context);
-    const entries = Object.entries(flat);
-
-    console.log();
-    console.log(pc.bold(pc.cyan('RECORDED CONTEXT DECISIONS:')));
-    console.log(pc.dim('─'.repeat(55)));
-
-    if (entries.length === 0) {
-      console.log(pc.dim('No decisions recorded yet. Run `npx build-with-ai done` after completing a step.'));
-    } else {
-      for (const [k, v] of entries) {
-        const valStr = typeof v === 'object' ? JSON.stringify(v) : String(v);
-        const truncated = valStr.length > 90 ? valStr.substring(0, 87) + '...' : valStr;
-        console.log(`  ${pc.dim('•')} ${pc.bold(k)}: ${truncated}`);
-      }
-    }
-    console.log();
-    console.log(pc.dim('Tip: Use `npx build-with-ai set <key> <value>` to update any decision.'));
-    console.log();
+    runContextCommand(key);
   });
 
 // ─────────────────────────────────────────────────
@@ -973,95 +1097,7 @@ program
   .description('Display project progress, step status list, and recorded decisions.')
   .option('--json', 'Output project status as JSON')
   .action((options) => {
-    if (!isInitialized()) {
-      logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
-      process.exit(1);
-    }
-
-    const state = loadState();
-    const context = loadContext();
-    const template = getTemplate(state.templateId);
-
-    const totalSteps = template ? template.steps.length : state.totalSteps || 0;
-    const currentStepNum = state.currentStep || 1;
-    const completedList = state.completedSteps || [];
-    const completedSteps = new Set(
-      completedList.filter((step) => Number.isInteger(step) && step >= 1 && step <= totalSteps)
-    );
-    const exportReady = totalSteps > 0 && completedSteps.size === totalSteps;
-    const decisions = context.decisions || {};
-
-    if (options.json) {
-      const output = {
-        projectName: state.projectName,
-        templateId: state.templateId,
-        templateTitle: state.templateTitle || state.templateId,
-        experienceLevel: state.experienceLevel,
-        projectIdea: state.projectIdea,
-        startedAt: state.startedAt || null,
-        updatedAt: state.updatedAt || null,
-        currentStep: currentStepNum,
-        totalSteps,
-        completedSteps: completedList,
-        completedCount: completedSteps.size,
-        progressPercent: totalSteps > 0 ? Math.round((completedSteps.size / totalSteps) * 100) : 0,
-        exportReady,
-        decisions
-      };
-      console.log(JSON.stringify(output, null, 2));
-      return;
-    }
-
-    console.log();
-    console.log(pc.bold(pc.cyan(`PROJECT STATUS: ${state.projectName}`)));
-    console.log(pc.dim('─'.repeat(55)));
-    console.log(`${pc.bold('Template:')} ${state.templateTitle || state.templateId}`);
-    console.log(`${pc.bold('Experience:')} ${state.experienceLevel}`);
-    console.log(`${pc.bold('Idea:')} ${state.projectIdea}`);
-    console.log(`${pc.bold('Progress:')} ${renderProgressBar(completedList.length, totalSteps)}`);
-    const now = Date.now();
-    const updatedAge = formatElapsedTime(state.updatedAt, now);
-    console.log(`${pc.bold('Time Elapsed:')} ${formatElapsedTime(state.startedAt, now)}`);
-    console.log(`${pc.bold('Last Updated:')} ${updatedAge === 'Unknown' ? updatedAge : `${updatedAge} ago`}`);
-    console.log(`${pc.bold('Decisions Count:')} ${Object.keys(flattenObject(context.decisions || {})).length}`);
-    console.log(`${pc.bold('Export Readiness:')} ${exportReady ? 'Ready' : 'In progress'}`);
-    console.log();
-
-    if (template && template.steps) {
-      console.log(pc.bold('WORKFLOW STEPS:'));
-      template.steps.forEach((step, idx) => {
-        const stepNum = idx + 1;
-        let prefix;
-        let titleFormatted;
-
-        if (completedList.includes(stepNum)) {
-          prefix = pc.green('  ✔');
-          titleFormatted = pc.dim(`${stepNum}. ${step.title} [${step.phase || 'General'}]`);
-        } else if (stepNum === currentStepNum) {
-          prefix = pc.cyan('  ➤');
-          titleFormatted = pc.bold(pc.cyan(`${stepNum}. ${step.title} [${step.phase || 'General'}] (Current)`));
-        } else {
-          prefix = pc.dim('  ○');
-          titleFormatted = pc.dim(`${stepNum}. ${step.title} [${step.phase || 'General'}]`);
-        }
-        console.log(`${prefix} ${titleFormatted}`);
-      });
-      console.log();
-    }
-
-    const entries = Object.entries(decisions);
-    if (entries.length > 0) {
-      console.log(pc.bold(pc.magenta('RECORDED DECISIONS:')));
-      for (const [k, v] of entries) {
-        const label = k.replace(/([A-Z])/g, ' $1').replace(/^./, (str) => str.toUpperCase());
-        const valStr = typeof v === 'object' ? JSON.stringify(v) : String(v);
-        console.log(`  ${pc.dim('•')} ${pc.bold(label)}: ${valStr}`);
-      }
-      console.log();
-    }
-
-    console.log(pc.dim('Tip: Use `npx build-with-ai set <key> <value>` to update any recorded decision.'));
-    console.log();
+    runStatusCommand(options);
   });
 
 // ─────────────────────────────────────────────────
@@ -1088,15 +1124,7 @@ program
   .option('-o, --out-dir <path>', 'Write documentation to a custom output directory')
   .option('-f, --force', 'Overwrite an existing README.md')
   .action(async (options) => {
-    if (!isInitialized()) {
-      logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
-      process.exit(1);
-    }
-    if (options.rules) {
-      if ((await runRulesExport(process.cwd(), options)) === false) process.exitCode = 1;
-      return;
-    }
-    if ((await runExport(process.cwd(), options)) === false) process.exitCode = 1;
+    await runExportCommand(options);
   });
 
 // ─────────────────────────────────────────────────
@@ -1298,111 +1326,17 @@ program.action(async () => {
     ]);
 
     if (nextAction === 'next') {
-      const currentStepNum = state.currentStep || 1;
-      if (currentStepNum > totalSteps) {
-        logger.success('All steps completed! Run `export` to generate documentation.');
-        return;
-      }
-      const currentStep = template.steps[currentStepNum - 1];
-      const context = loadContext();
-      const { resolvedPrompt, warnings, targetFiles, recommendedAI } = resolveStepPrompt(currentStep, context);
-
-      displayStep({
-        stepNum: currentStepNum,
-        totalSteps,
-        title: currentStep.title,
-        phase: currentStep.phase || '',
-        goal: currentStep.goal,
-        expectedOutput: currentStep.expectedOutput,
-        prompt: resolvedPrompt,
-        warnings,
-        targetFiles,
-        recommendedAI
-      });
-
-      const copied = await copyToClipboard(resolvedPrompt);
-      console.log();
-      if (copied) {
-        console.log(pc.green(pc.bold('Prompt copied to clipboard')));
-      } else {
-        console.log(pc.yellow('Copy the prompt above and paste it into your AI assistant.'));
-      }
-      console.log();
-      console.log(pc.dim('When done, run: ') + pc.bold(pc.cyan('npx build-with-ai done')));
-      console.log();
+      await runNextCommand({});
     } else if (nextAction === 'context') {
-      const context = loadContext();
-      const flat = flattenObject(context);
-      const entries = Object.entries(flat);
-      console.log();
-      console.log(pc.bold(pc.cyan('RECORDED CONTEXT DECISIONS:')));
-      console.log(pc.dim('─'.repeat(55)));
-      if (entries.length === 0) {
-        console.log(pc.dim('No decisions recorded yet.'));
-      } else {
-        for (const [k, v] of entries) {
-          const valStr = typeof v === 'object' ? JSON.stringify(v) : String(v);
-          const truncated = valStr.length > 90 ? valStr.substring(0, 87) + '...' : valStr;
-          console.log(`  ${pc.dim('•')} ${pc.bold(k)}: ${truncated}`);
-        }
-      }
-      console.log();
-      console.log(pc.dim('Use `npx build-with-ai set <key> <value>` to update any decision.'));
-      console.log();
+      runContextCommand();
     } else if (nextAction === 'jump') {
-      if (!template || !template.steps) {
-        logger.error('Template not found.');
-        return;
-      }
-      const { picked } = await safePrompt([
-        {
-          type: 'list',
-          name: 'picked',
-          message: 'Select a step to jump to:',
-          choices: template.steps.map((s, idx) => {
-            const num = idx + 1;
-            const isDone = (state.completedSteps || []).includes(num);
-            const isCurrent = state.currentStep === num;
-            const icon = isDone ? pc.green('✔') : isCurrent ? pc.cyan('➤') : pc.dim('○');
-            return {
-              name: `${icon} Step ${num}: ${s.title} [${s.phase || 'General'}]`,
-              value: num
-            };
-          })
-        }
-      ]);
-      state.currentStep = picked;
-      saveState(state);
-      logger.success(`Jumped to Step ${picked}/${totalSteps}.`);
-      console.log(
-        pc.cyan('Run ') + pc.bold(pc.green('npx build-with-ai next')) + pc.cyan(" to generate this step's prompt.")
-      );
-      console.log();
+      await runJumpCommand();
     } else if (nextAction === 'resume') {
       runResume();
     } else if (nextAction === 'status') {
-      const context = loadContext();
-      console.log();
-      console.log(pc.bold(pc.cyan(`PROJECT STATUS: ${state.projectName}`)));
-      console.log(pc.dim('─'.repeat(55)));
-      console.log(`${pc.bold('Template:')} ${state.templateTitle || state.templateId}`);
-      console.log(`${pc.bold('Experience:')} ${state.experienceLevel}`);
-      console.log(`${pc.bold('Idea:')} ${state.projectIdea}`);
-      console.log(`${pc.bold('Progress:')} ${renderProgressBar(completedCount, totalSteps)}`);
-      const decisions = context.decisions || {};
-      const entries = Object.entries(decisions);
-      if (entries.length > 0) {
-        console.log();
-        console.log(pc.bold(pc.magenta('RECORDED DECISIONS:')));
-        for (const [k, v] of entries) {
-          const label = k.replace(/([A-Z])/g, ' $1').replace(/^./, (str) => str.toUpperCase());
-          const valStr = typeof v === 'object' ? JSON.stringify(v) : String(v);
-          console.log(`  ${pc.dim('•')} ${pc.bold(label)}: ${valStr}`);
-        }
-      }
-      console.log();
+      runStatusCommand({});
     } else if (nextAction === 'export') {
-      if ((await runExport()) === false) process.exitCode = 1;
+      await runExportCommand({});
     }
   } else {
     console.log(pc.yellow('No active project found in this directory.'));
