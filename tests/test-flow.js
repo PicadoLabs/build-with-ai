@@ -59,7 +59,12 @@ const { parseDecisions } = require('../lib/decisionParser');
 
 const { validateTemplate } = require('../lib/validator');
 
-const { findMissingTargetFiles, printTargetFileTips, getGitChangedFiles } = require('../lib/ui');
+const {
+  findMissingTargetFiles,
+  printTargetFileTips,
+  getGitChangedFiles,
+  parseGitStatusPorcelain
+} = require('../lib/ui');
 
 async function runIsolatedClipboardFallback(moduleSource) {
   const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-clipboard-'));
@@ -1425,6 +1430,13 @@ async function runTests() {
     assert(changed.has('tracked.txt'), 'modified file is reported');
     assert(changed.has('new.txt'), 'untracked file is reported');
     assert(!changed.has('missing.txt'), 'unchanged paths are not reported');
+
+    // Windows git can emit CRLF line breaks; a trailing carriage return must not end up in the path
+    const crlf = parseGitStatusPorcelain(' M src/index.js\r\n?? "odd name.txt"\r\nR  old.js -> new.js\r\n');
+    assert(crlf.has('src/index.js'), 'CRLF output: modified path has no trailing carriage return');
+    assert(crlf.has('odd name.txt'), 'CRLF output: quoted path is unquoted without carriage return');
+    assert(crlf.has('new.js'), 'CRLF output: renamed path keeps the new name without carriage return');
+    assert(![...crlf].some((p) => p.includes('\r')), 'no reported path contains a carriage return');
 
     // Outside a git repository it returns null instead of throwing
     const plainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-nogit-'));
