@@ -2249,6 +2249,67 @@ async function runTests() {
   }
   console.log('  ✔ initState gitignores .buildwithai/.env.');
 
+  // Custom template workspace persistence (#133): init --template writes
+  // .buildwithai/template.json and later commands resolve it from there.
+  console.log('\n▶ Test: custom template persists to the workspace and resolves on later commands');
+  const customTplDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-custom-tpl-'));
+  try {
+    const customTemplate = {
+      id: 'custom-template',
+      type: 'custom-template',
+      title: 'Custom Template',
+      stepCount: 2,
+      steps: [
+        { id: 'cstep-1', title: 'Custom step one', prompt: 'Do the first custom thing for {{project.name}}.' },
+        { id: 'cstep-2', title: 'Custom step two', prompt: 'Do the second custom thing.' }
+      ]
+    };
+    initState(
+      {
+        projectName: 'Custom Demo',
+        templateId: customTemplate.id,
+        templateTitle: customTemplate.title,
+        experienceLevel: 'Beginner',
+        projectIdea: 'Demo.',
+        totalSteps: customTemplate.stepCount,
+        customTemplate
+      },
+      customTplDir
+    );
+
+    // Acceptance: init writes .buildwithai/template.json
+    const persistedPath = path.join(getStorageDir(customTplDir), 'template.json');
+    assert.ok(fs.existsSync(persistedPath), 'init persists .buildwithai/template.json for custom templates');
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(persistedPath, 'utf8')), customTemplate);
+
+    // Acceptance: `next` resolves the custom template from the workspace and formats its steps
+    const persistedState = loadState(customTplDir);
+    const resolved = getTemplate(persistedState.templateId, customTplDir);
+    assert.ok(resolved, 'getTemplate resolves the custom template id from the workspace');
+    assert.strictEqual(resolved.id, customTemplate.id);
+    const nextPrompt = resolveStepPrompt(resolved.steps[persistedState.currentStep - 1], loadContext(customTplDir));
+    assert.ok(
+      nextPrompt.resolvedPrompt.includes('first custom thing'),
+      '`next` formats steps from the persisted custom template'
+    );
+
+    // A workspace template that does not match falls back to built-ins
+    const builtin = getTemplate('web-app', customTplDir);
+    assert.ok(builtin && builtin.id === 'web-app', 'non-matching ids still resolve built-in templates');
+
+    // A corrupt workspace template never breaks resolution
+    fs.writeFileSync(persistedPath, '{not valid json', 'utf8');
+    assert.strictEqual(
+      getTemplate('custom-template', customTplDir),
+      null,
+      'corrupt workspace template falls back to null instead of throwing'
+    );
+
+    console.log('  ✔ custom template persists to .buildwithai/template.json and resolves on later commands.');
+  } finally {
+    fs.rmSync(customTplDir, { recursive: true, force: true });
+  }
+
   // Cleanup temp dir
   fs.rmSync(tempDir, { recursive: true, force: true });
   console.log('\n🎉 ALL TESTS PASSED SUCCESSFULLY! ✅\n');
