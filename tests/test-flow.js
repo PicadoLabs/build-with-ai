@@ -1158,6 +1158,78 @@ async function runTests() {
     fs.rmSync(undoDir, { recursive: true, force: true });
   }
 
+  console.log('\n▶ Test 9c: Step Cancellation Snapshots & Context Reversion');
+  const cancelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-cancel-'));
+  try {
+    for (const choice of ['not_yet', 'later']) {
+      initState(
+        {
+          projectName: 'Cancel Demo',
+          templateId: 'web-app',
+          templateTitle: 'Web App',
+          experienceLevel: 'Intermediate',
+          projectIdea: 'A cancel demo.',
+          totalSteps: 23
+        },
+        cancelDir
+      );
+      saveContext({ project: { name: 'Cancel Demo' }, decisions: { database: 'PostgreSQL' } }, cancelDir);
+      saveSnapshot(1, cancelDir);
+      const st = loadState(cancelDir);
+      st.currentStep = 2;
+      st.completedSteps = [1];
+      saveState(st, cancelDir);
+
+      const runnerScript = path.join(cancelDir, 'run-cancel-test.js');
+      const cliScriptPath = path.resolve(__dirname, '..', 'bin', 'cli.js');
+      const inquirerModPath = require.resolve('inquirer', { paths: [path.join(__dirname, '..')] });
+
+      fs.writeFileSync(
+        runnerScript,
+        [
+          'const inquirer = require(' + JSON.stringify(inquirerModPath) + ');',
+          'inquirer.prompt = async (questions) => {',
+          '  const q = Array.isArray(questions) ? questions[0] : questions;',
+          "  if (q.name === 'recordChoice') return { recordChoice: 'decisions' };",
+          "  if (q.name === 'val') return { val: 'Unconfirmed Decision' };",
+          "  if (q.name === 'confirmDecision') return { confirmDecision: " + JSON.stringify(choice) + ' };',
+          '  return {};',
+          '};',
+          'process.argv = [process.execPath, ' + JSON.stringify(cliScriptPath) + ", 'done'];",
+          'require(' + JSON.stringify(cliScriptPath) + ');'
+        ].join('\n'),
+        'utf8'
+      );
+
+      const res = require('child_process').spawnSync(process.execPath, [runnerScript], {
+        cwd: cancelDir,
+        encoding: 'utf8'
+      });
+      assert.strictEqual(res.status, 0, 'CLI done should exit cleanly on cancellation');
+
+      const snapshots = listSnapshots(cancelDir);
+      assert.strictEqual(snapshots.length, 1, 'Pending step 2 snapshot must be deleted on cancellation');
+      assert.strictEqual(snapshots[0].step, 1, 'Only completed step 1 snapshot remains');
+
+      const ctx = loadContext(cancelDir);
+      assert.strictEqual(ctx.decisions.database, 'PostgreSQL', 'Pre-step decisions must be restored');
+      assert.strictEqual(ctx.decisions.mvpFeatures, undefined, 'Unconfirmed decisions must not persist');
+
+      const undone = undoLastStep(cancelDir);
+      assert.deepStrictEqual(undone, { step: 1 }, 'Undo must only roll back completed steps');
+      const stateAfter = loadState(cancelDir);
+      assert.strictEqual(stateAfter.currentStep, 1, 'Step counter rolled back to completed step');
+      assert.deepStrictEqual(stateAfter.completedSteps, [], 'Completed steps rolled back');
+
+      resetProject(cancelDir);
+    }
+    console.log(
+      '  ✔ step cancellation reverts context decisions, deletes pending snapshot, and undo rolls back safely.'
+    );
+  } finally {
+    fs.rmSync(cancelDir, { recursive: true, force: true });
+  }
+
   // Restore step for export test
   state.currentStep = 3;
   saveState(state, tempDir);

@@ -14,6 +14,7 @@ const {
   getAllHistory,
   resetProject,
   saveSnapshot,
+  loadSnapshot,
   deleteSnapshot,
   undoLastStep
 } = require('../lib/state');
@@ -673,6 +674,11 @@ program
         }
       ]);
       if (confirmDecision !== 'yes') {
+        const snapshot = loadSnapshot(currentStepNum);
+        if (snapshot && snapshot.context) {
+          saveContext(snapshot.context);
+        }
+        deleteSnapshot(currentStepNum);
         console.log(
           pc.dim(
             confirmDecision === 'later'
