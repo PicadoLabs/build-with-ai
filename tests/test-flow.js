@@ -63,7 +63,8 @@ const {
   findMissingTargetFiles,
   printTargetFileTips,
   getGitChangedFiles,
-  parseGitStatusPorcelain
+  parseGitStatusPorcelain,
+  countUniqueCompletedSteps
 } = require('../lib/ui');
 
 async function runIsolatedClipboardFallback(moduleSource) {
@@ -436,6 +437,19 @@ async function runTests() {
     });
   }
   console.log('  \u2714 UTF-8 detection and ASCII fallback glyphs verified.');
+
+  // Test: Unique completed steps deduplication (#138)
+  console.log('\n\u25b6 Test: countUniqueCompletedSteps helper');
+  assert.strictEqual(
+    countUniqueCompletedSteps([1, 1, 2, 0, 9, 99, 'a', null, 2], 4),
+    2,
+    'duplicates, non-integers, and out-of-range steps must be filtered out'
+  );
+  assert.strictEqual(countUniqueCompletedSteps([], 5), 0, 'empty list returns 0');
+  assert.strictEqual(countUniqueCompletedSteps(null, 5), 0, 'null input returns 0');
+  assert.strictEqual(countUniqueCompletedSteps([1, 2, 3], 0), 0, 'totalSteps <= 0 returns 0');
+  assert.strictEqual(countUniqueCompletedSteps([-1, -2], 3), 0, 'negative steps returns 0');
+  console.log('  \u2714 countUniqueCompletedSteps deduplicates and filters in-bounds steps.');
 
   // Context paths: preserve existing dot-separator semantics and value types.
   const deepContext = {};
