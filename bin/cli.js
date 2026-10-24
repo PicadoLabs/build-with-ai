@@ -26,6 +26,7 @@ const { parseDecisions } = require('../lib/decisionParser');
 const {
   displayStep,
   renderProgressBar,
+  countUniqueCompletedSteps,
   displayBanner,
   formatElapsedTime,
   printTargetFileTips,
@@ -514,10 +515,8 @@ function runStatusCommand(options = {}) {
   const totalSteps = template ? template.steps.length : state.totalSteps || 0;
   const currentStepNum = state.currentStep || 1;
   const completedList = state.completedSteps || [];
-  const completedSteps = new Set(
-    completedList.filter((step) => Number.isInteger(step) && step >= 1 && step <= totalSteps)
-  );
-  const exportReady = totalSteps > 0 && completedSteps.size === totalSteps;
+  const completedCount = countUniqueCompletedSteps(state.completedSteps, totalSteps);
+  const exportReady = totalSteps > 0 && completedCount === totalSteps;
   const decisions = context.decisions || {};
 
   if (options.json) {
@@ -532,8 +531,8 @@ function runStatusCommand(options = {}) {
       currentStep: currentStepNum,
       totalSteps,
       completedSteps: completedList,
-      completedCount: completedSteps.size,
-      progressPercent: totalSteps > 0 ? Math.round((completedSteps.size / totalSteps) * 100) : 0,
+      completedCount,
+      progressPercent: totalSteps > 0 ? Math.round((completedCount / totalSteps) * 100) : 0,
       exportReady,
       decisions
     };
@@ -547,7 +546,7 @@ function runStatusCommand(options = {}) {
   console.log(`${pc.bold('Template:')} ${state.templateTitle || state.templateId}`);
   console.log(`${pc.bold('Experience:')} ${state.experienceLevel}`);
   console.log(`${pc.bold('Idea:')} ${state.projectIdea}`);
-  console.log(`${pc.bold('Progress:')} ${renderProgressBar(completedList.length, totalSteps)}`);
+  console.log(`${pc.bold('Progress:')} ${renderProgressBar(completedCount, totalSteps)}`);
   const now = Date.now();
   const updatedAge = formatElapsedTime(state.updatedAt, now);
   console.log(`${pc.bold('Time Elapsed:')} ${formatElapsedTime(state.startedAt, now)}`);
@@ -1308,7 +1307,7 @@ program.action(async () => {
     const state = loadState();
     const template = getTemplate(state.templateId);
     const totalSteps = template ? template.steps.length : state.totalSteps || 0;
-    const completedCount = Array.isArray(state.completedSteps) ? state.completedSteps.length : 0;
+    const completedCount = countUniqueCompletedSteps(state.completedSteps, totalSteps);
 
     console.log(`${pc.bold('Active Project:')} ${pc.cyan(state.projectName || 'Current Project')}`);
     console.log(`${pc.bold('Progress:')} ${renderProgressBar(completedCount, totalSteps)}`);
