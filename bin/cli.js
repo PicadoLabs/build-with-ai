@@ -205,7 +205,9 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
   }
 
   // 1. File blocks → preview (with --review) → safe write.
-  const blocks = parseFileBlocks(response);
+  // targetFiles lets the parser accept extension-less declared targets
+  // (e.g. Dockerfile) while still rejecting language-tagged fences (#134).
+  const blocks = parseFileBlocks(response, targetFiles);
   let written = 0;
   let skipped = 0;
   if (blocks.length === 0) {

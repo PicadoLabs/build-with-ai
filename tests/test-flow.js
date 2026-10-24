@@ -2414,6 +2414,50 @@ async function runTests() {
   assert.deepStrictEqual(parseAiDecisions('no blocks here'), {}, 'Missing decisions block → {}');
   assert.throws(() => parseAiDecisions('```decisions\n{bad json}\n```'), /Could not parse/, 'Bad JSON must throw');
   assert.throws(() => parseAiDecisions('```decisions\n[1,2]\n```'), /must be a JSON object/, 'Non-object must throw');
+
+  // Language-tagged explanatory fences are never treated as file paths (#134)
+  const mixed = [
+    'Some explanation:',
+    '```javascript',
+    "console.log('snippet');",
+    '```',
+    '```bash',
+    'npm test',
+    '```',
+    '```json',
+    '{ "a": 1 }',
+    '```',
+    '```diff',
+    '- old',
+    '+ new',
+    '```',
+    '```markdown',
+    '# heading',
+    '```',
+    'And the real target:',
+    '```src/app.js',
+    "console.log('real');",
+    '```',
+    '```package.json',
+    '{ "name": "demo" }',
+    '```'
+  ].join('\n');
+  const mixedBlocks = parseFileBlocks(mixed);
+  assert.deepStrictEqual(
+    mixedBlocks.map((b) => b.path).sort(),
+    ['package.json', 'src/app.js'],
+    'language-tagged fences must be ignored; genuine blocks parsed'
+  );
+  assert.strictEqual(mixedBlocks.find((b) => b.path === 'src/app.js').content, "console.log('real');");
+
+  // Extension-less names are skipped unless declared in targetFiles
+  const bare = '```Dockerfile\nFROM node\n```';
+  assert.deepStrictEqual(parseFileBlocks(bare), [], 'bare names are skipped by default');
+  assert.deepStrictEqual(
+    parseFileBlocks(bare, ['Dockerfile']).map((b) => b.path),
+    ['Dockerfile'],
+    'declared target files are always accepted'
+  );
   console.log('  ✔ File-block and decisions parsing.');
 
   // Safe paths: traversal and absolute paths are rejected
