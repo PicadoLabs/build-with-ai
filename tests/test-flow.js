@@ -2229,6 +2229,80 @@ async function runTests() {
     fs.rmSync(mcpUndoDir, { recursive: true, force: true });
   }
 
+  // Test: MCP complete_step does not leave a snapshot behind when the step is
+  // rejected (#174). A stale snapshot lets a later `undo` roll back a step
+  // that never completed.
+  console.log('\n▶ Test: MCP complete_step drops the snapshot on validation failure');
+  const mcpRejectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-mcp-reject-'));
+  try {
+    initState(
+      {
+        projectName: 'MCP Reject Demo',
+        templateId: 'web-app',
+        templateTitle: 'Full-Stack Web Application',
+        experienceLevel: 'Beginner',
+        projectIdea: 'A demo project.',
+        totalSteps: 4
+      },
+      mcpRejectDir
+    );
+    const rejectSnapshotPath = path.join(mcpRejectDir, '.buildwithai', 'snapshots', 'step-01.json');
+
+    const emptyKey = handleRequest(
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'complete_step', arguments: { decisions: { '   ': 'x' } } }
+      },
+      mcpRejectDir
+    );
+    assert.strictEqual(emptyKey.result.isError, true, 'blank decision keys must be rejected');
+    assert.strictEqual(
+      fs.existsSync(rejectSnapshotPath),
+      false,
+      'a rejected complete_step must not leave a pending snapshot behind'
+    );
+    assert.strictEqual(loadState(mcpRejectDir).currentStep, 1, 'a rejected complete_step must not advance');
+
+    const reservedKey = handleRequest(
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'complete_step', arguments: { decisions: { '__proto__.polluted': true } } }
+      },
+      mcpRejectDir
+    );
+    assert.strictEqual(reservedKey.result.isError, true, 'reserved path segments must be rejected');
+    assert.strictEqual(
+      fs.existsSync(rejectSnapshotPath),
+      false,
+      'no snapshot may survive a second rejected complete_step'
+    );
+
+    const accepted = JSON.parse(
+      handleRequest(
+        {
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: { name: 'complete_step', arguments: { decisions: { 'decisions.database': 'SQLite' } } }
+        },
+        mcpRejectDir
+      ).result.content[0].text
+    );
+    assert.strictEqual(accepted.completedStep, 1, 'a valid retry after rejections must still complete the step');
+    assert.strictEqual(
+      fs.existsSync(rejectSnapshotPath),
+      true,
+      'the step that really completes must keep its undo snapshot'
+    );
+    console.log('  ✔ MCP complete_step removes the pending snapshot when validation rejects the step.');
+  } finally {
+    fs.rmSync(mcpRejectDir, { recursive: true, force: true });
+  }
+
   // Test: BYOK autonomous engine (#108)
   console.log('\n▶ Test: BYOK autonomous engine');
   const {
