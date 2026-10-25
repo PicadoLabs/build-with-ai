@@ -2538,7 +2538,13 @@ async function runTests() {
       title: 'Custom Template',
       stepCount: 2,
       steps: [
-        { id: 'cstep-1', title: 'Custom step one', prompt: 'Do the first custom thing for {{project.name}}.' },
+        {
+          id: 'cstep-1',
+          title: 'Custom step one',
+          phase: 'Custom planning',
+          goal: 'Define the custom project goal.',
+          prompt: 'Do the first custom thing for {{project.name}}.'
+        },
         { id: 'cstep-2', title: 'Custom step two', prompt: 'Do the second custom thing.' }
       ]
     };
@@ -2574,6 +2580,57 @@ async function runTests() {
     // A workspace template that does not match falls back to built-ins
     const builtin = getTemplate('web-app', customTplDir);
     assert.ok(builtin && builtin.id === 'web-app', 'non-matching ids still resolve built-in templates');
+
+    const originalCwd = process.cwd();
+    assert.notStrictEqual(path.resolve(customTplDir), originalCwd, 'use a workspace outside process.cwd()');
+    const callCustomTool = (name, args = {}) => {
+      const result = handleRequest(
+        { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+        customTplDir
+      );
+      assert.ok(result.result && !result.result.isError, `${name} succeeds for the custom workspace`);
+      return JSON.parse(result.result.content[0].text);
+    };
+
+    // Prefer the persisted template over a stale step count in the state summary.
+    persistedState.totalSteps = 99;
+    saveState(persistedState, customTplDir);
+    assert.strictEqual(callCustomTool('get_workflow_status').totalSteps, 2);
+    const active = callCustomTool('get_active_prompt');
+    assert.strictEqual(active.completed, false, 'a custom workflow outside process.cwd() is still active');
+    assert.strictEqual(active.title, 'Custom step one');
+    assert.strictEqual(active.phase, 'Custom planning');
+
+    const { runResume } = require('../lib/resume');
+    const resumeOutput = [];
+    const originalLog = console.log;
+    try {
+      console.log = (...args) => resumeOutput.push(args.join(' '));
+      runResume(customTplDir);
+    } finally {
+      console.log = originalLog;
+    }
+    assert.ok(resumeOutput.join('\n').includes('Custom step one'), 'resume shows the custom current step');
+    assert.ok(resumeOutput.join('\n').includes('Define the custom project goal.'), 'resume shows the custom goal');
+
+    await runRulesExport(customTplDir);
+    const customRules = fs.readFileSync(path.join(customTplDir, '.cursorrules'), 'utf8');
+    assert.ok(customRules.includes('Step 1/2'), 'rules use the custom template step count');
+    assert.ok(customRules.includes('Custom step one (Custom planning)'), 'rules include the custom active phase');
+
+    const completed = callCustomTool('complete_step', { response: 'Finished the first custom step.' });
+    assert.strictEqual(completed.completedStep, 1);
+    assert.strictEqual(completed.advancedToStep, 2);
+    assert.strictEqual(completed.totalSteps, 2);
+    assert.strictEqual(loadState(customTplDir).currentStep, 2, 'MCP advances the target workspace');
+    assert.deepStrictEqual(loadState(customTplDir).completedSteps, [1]);
+
+    await runExport(customTplDir, { interactive: false });
+    const customBuildLog = fs.readFileSync(path.join(customTplDir, 'BUILD_LOG.md'), 'utf8');
+    assert.ok(customBuildLog.includes('## Step 1: Custom step one (Custom planning)'));
+    assert.ok(customBuildLog.includes('Define the custom project goal.'), 'export includes the custom step goal');
+    assert.ok(customBuildLog.includes('Finished the first custom step.'), 'export retains the saved response');
+    assert.strictEqual(process.cwd(), originalCwd, 'workspace-aware commands do not change process.cwd()');
 
     // A corrupt workspace template never breaks resolution
     fs.writeFileSync(persistedPath, '{not valid json', 'utf8');
