@@ -2573,9 +2573,17 @@ async function runTests() {
     assert.strictEqual(resolveTargetPath(safeDir, ''), null, 'Empty path rejected');
     assert.strictEqual(resolveTargetPath(safeDir, 'src/app.js'), path.join(safeDir, 'src', 'app.js'));
     assert.strictEqual(resolveTargetPath(safeDir, '.git/hooks/pre-commit'), null, 'Git hooks directory is reserved');
-    assert.strictEqual(resolveTargetPath(safeDir, '.buildwithai/state.json'), null, 'Project state directory is reserved');
+    assert.strictEqual(
+      resolveTargetPath(safeDir, '.buildwithai/state.json'),
+      null,
+      'Project state directory is reserved'
+    );
     assert.strictEqual(resolveTargetPath(safeDir, 'node_modules/foo/bar.js'), null, 'node_modules is reserved');
-    assert.strictEqual(resolveTargetPath(safeDir, '.env.example'), path.join(safeDir, '.env.example'), 'Root dotfiles still resolve');
+    assert.strictEqual(
+      resolveTargetPath(safeDir, '.env.example'),
+      path.join(safeDir, '.env.example'),
+      'Root dotfiles still resolve'
+    );
 
     const results = writeFileBlocks(safeDir, [
       { path: 'src/app.js', content: "console.log('hi');\n" },
