@@ -59,6 +59,8 @@ const { parseDecisions } = require('../lib/decisionParser');
 
 const { validateTemplate } = require('../lib/validator');
 
+const { runInit } = require('../lib/init');
+
 const {
   findMissingTargetFiles,
   printTargetFileTips,
@@ -2734,6 +2736,42 @@ async function runTests() {
     console.log('  ✔ custom template persists to .buildwithai/template.json and resolves on later commands.');
   } finally {
     fs.rmSync(customTplDir, { recursive: true, force: true });
+  }
+
+  // Regression (#170): a failed custom template load must not delete existing state
+  console.log('\n▶ Regression: Failed re-init with an invalid custom template preserves state');
+  const failedInitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-failed-init-'));
+  try {
+    initState(
+      {
+        projectName: 'Valuable',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Beginner',
+        projectIdea: 'A valuable project',
+        totalSteps: 5
+      },
+      failedInitDir
+    );
+    saveHistory(1, '# Step 1 AI Response', failedInitDir);
+    const stateBefore = fs.readFileSync(path.join(getStorageDir(failedInitDir), 'state.json'), 'utf8');
+
+    await runInit({ force: true, template: path.join(failedInitDir, 'non-existent.json') }, failedInitDir);
+
+    assert.strictEqual(isInitialized(failedInitDir), true, 'Failed template load must not delete existing state');
+    assert.strictEqual(
+      fs.readFileSync(path.join(getStorageDir(failedInitDir), 'state.json'), 'utf8'),
+      stateBefore,
+      'state.json must be unchanged after a failed template load'
+    );
+    assert.strictEqual(
+      loadHistory(1, failedInitDir),
+      '# Step 1 AI Response',
+      'History must survive a failed template load'
+    );
+    console.log('  ✔ Existing .buildwithai state preserved when the custom template fails to load.');
+  } finally {
+    fs.rmSync(failedInitDir, { recursive: true, force: true });
   }
 
   // Cleanup temp dir
