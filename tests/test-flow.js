@@ -2572,6 +2572,10 @@ async function runTests() {
     assert.strictEqual(resolveTargetPath(safeDir, '/abs/path.js'), null, 'Absolute path rejected');
     assert.strictEqual(resolveTargetPath(safeDir, ''), null, 'Empty path rejected');
     assert.strictEqual(resolveTargetPath(safeDir, 'src/app.js'), path.join(safeDir, 'src', 'app.js'));
+    assert.strictEqual(resolveTargetPath(safeDir, '.git/hooks/pre-commit'), null, 'Git hooks directory is reserved');
+    assert.strictEqual(resolveTargetPath(safeDir, '.buildwithai/state.json'), null, 'Project state directory is reserved');
+    assert.strictEqual(resolveTargetPath(safeDir, 'node_modules/foo/bar.js'), null, 'node_modules is reserved');
+    assert.strictEqual(resolveTargetPath(safeDir, '.env.example'), path.join(safeDir, '.env.example'), 'Root dotfiles still resolve');
 
     const results = writeFileBlocks(safeDir, [
       { path: 'src/app.js', content: "console.log('hi');\n" },
@@ -2583,6 +2587,14 @@ async function runTests() {
     assert.ok(results[1].skipped.includes('unsafe'));
     assert.strictEqual(fs.readFileSync(path.join(safeDir, 'src', 'app.js'), 'utf8'), "console.log('hi');\n");
     assert.ok(!fs.existsSync(path.join(os.tmpdir(), 'evil.js')), 'Traversal file must not exist');
+
+    const reserved = writeFileBlocks(safeDir, [
+      { path: '.git/hooks/pre-commit', content: 'evil' },
+      { path: '.buildwithai/state.json', content: 'evil' }
+    ]);
+    assert.strictEqual(reserved[0].written, false, 'Reserved git-hook block is skipped, never written');
+    assert.strictEqual(reserved[1].written, false, 'Reserved state block is skipped, never written');
+    assert.ok(!fs.existsSync(path.join(safeDir, '.git')), 'Reserved .git directory must not be created');
 
     const diff = renderDiff('line1\nline2\nline3\n', 'line1\nCHANGED\nline3\n', { color: false });
     assert.ok(diff.includes('- line2'), 'Removed line marked');
