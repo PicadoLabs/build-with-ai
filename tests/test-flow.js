@@ -948,6 +948,23 @@ async function runTests() {
   assert.strictEqual(blocked.found['decisions.framework'], 'Next.js');
   assert.deepStrictEqual(blocked.missing, ['decisions.auth'], 'Keys missing from the block still report as missing');
 
+  // Unprefixed and nested ```decisions JSON blocks resolve dotted keys (#173)
+  const unprefixedBlock = ['```decisions', '{ "database": "PostgreSQL" }', '```'].join('\n');
+  const unprefixed = parseDecisions(unprefixedBlock, ['decisions.database']);
+  assert.strictEqual(
+    unprefixed.found['decisions.database'],
+    'PostgreSQL',
+    'Unprefixed key resolves a dotted write key'
+  );
+  assert.deepStrictEqual(unprefixed.missing, []);
+  const nestedBlock = ['```decisions', '{ "decisions": { "database": "PostgreSQL" } }', '```'].join('\n');
+  const nested = parseDecisions(nestedBlock, ['decisions.database']);
+  assert.strictEqual(nested.found['decisions.database'], 'PostgreSQL', 'Nested object resolves a dotted write key');
+  assert.deepStrictEqual(nested.missing, []);
+  const literalBlock = ['```decisions', '{ "decisions.database": "PostgreSQL" }', '```'].join('\n');
+  const literal = parseDecisions(literalBlock, ['decisions.database']);
+  assert.strictEqual(literal.found['decisions.database'], 'PostgreSQL', 'Literal dotted key still resolves');
+
   // A malformed ```decisions block falls back to line-by-line parsing
   const malformed = parseDecisions('```decisions\n{bad json}\n```\nDatabase: MySQL', ['decisions.database']);
   assert.strictEqual(malformed.found['decisions.database'], 'MySQL', 'Malformed block falls back to heuristics');
