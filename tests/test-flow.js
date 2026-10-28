@@ -43,10 +43,11 @@ const { getByPath, setByPath, flattenObject } = require('../lib/contextBuilder')
 
 const { parseEditorValue, formatEditorValue, summarizeValue, runConfigEditor } = require('../lib/configEditor');
 
-const { runExport, resolveReadmePath } = require('../lib/export');
+const { runExport, generateReadme, resolveReadmePath } = require('../lib/export');
 
 const {
   runRulesExport,
+  generateRulesContent,
   mergeRulesFile,
   getRuleFilePaths,
   RULES_BLOCK_START,
@@ -2566,6 +2567,28 @@ async function runTests() {
     'declared target files are always accepted'
   );
   console.log('  ✔ File-block and decisions parsing.');
+
+  // Alternative auth decision keys surface in export and rules (#195)
+  const authCtx = {
+    project: { name: 'Auth Demo', idea: 'Demo.' },
+    decisions: { frontendStack: 'Next.js', database: 'PostgreSQL', authProvider: 'Clerk' }
+  };
+  assert(
+    generateReadme({ projectName: 'Auth Demo' }, authCtx).includes('- **Authentication:** Clerk'),
+    'export must show authProvider as Authentication'
+  );
+  const authRules = generateRulesContent(authCtx, { projectName: 'Auth Demo' });
+  assert(authRules.includes('- Auth: Clerk'), 'rules must show authProvider as Auth');
+  assert(!authRules.includes('**AuthProvider:**'), 'auth alias must not duplicate under Decisions');
+  const implCtx = { project: {}, decisions: { authImplementation: 'FastAPI OAuth2' } };
+  assert(generateReadme({}, implCtx).includes('FastAPI OAuth2'), 'export must show authImplementation');
+  assert(generateRulesContent(implCtx).includes('FastAPI OAuth2'), 'rules must show authImplementation');
+  const modCtx = { project: {}, decisions: { authModule: 'Firebase Auth' } };
+  assert(generateReadme({}, modCtx).includes('Firebase Auth'), 'export must show authModule');
+  assert(generateRulesContent(modCtx).includes('Firebase Auth'), 'rules must show authModule');
+  const bothCtx = { project: {}, decisions: { authStrategy: 'NextAuth.js', authProvider: 'Clerk' } };
+  assert(generateReadme({}, bothCtx).includes('NextAuth.js'), 'authStrategy takes precedence');
+  assert(!generateReadme({}, bothCtx).includes('Clerk'), 'fallback alias must not appear when authStrategy present');
 
   // Safe paths: traversal and absolute paths are rejected
   const safeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-aiclient-'));
