@@ -2776,7 +2776,10 @@ async function runTests() {
     saveHistory(1, '# Step 1 AI Response', failedInitDir);
     const stateBefore = fs.readFileSync(path.join(getStorageDir(failedInitDir), 'state.json'), 'utf8');
 
+    const priorExitCode = process.exitCode;
+    process.exitCode = 0;
     await runInit({ force: true, template: path.join(failedInitDir, 'non-existent.json') }, failedInitDir);
+    assert.strictEqual(process.exitCode, 1, 'Failed custom template loading must set a failing exit code');
 
     assert.strictEqual(isInitialized(failedInitDir), true, 'Failed template load must not delete existing state');
     assert.strictEqual(
@@ -2790,8 +2793,46 @@ async function runTests() {
       'History must survive a failed template load'
     );
     console.log('  ✔ Existing .buildwithai state preserved when the custom template fails to load.');
+
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({ ok: false, status: 404 });
+    process.exitCode = 0;
+    try {
+      await runInit({ template: 'https://example.test/missing-template.json' }, failedInitDir);
+      assert.strictEqual(process.exitCode, 1, 'Failed remote template loading must set a failing exit code');
+    } finally {
+      global.fetch = originalFetch;
+      process.exitCode = priorExitCode;
+    }
   } finally {
     fs.rmSync(failedInitDir, { recursive: true, force: true });
+  }
+
+  console.log('\n▶ Regression: Successful template initialization preserves a zero exit code');
+  const successfulInitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-successful-init-'));
+  const validTemplatePath = path.join(successfulInitDir, 'valid-template.json');
+  const originalPrompt = require('inquirer').prompt;
+  try {
+    fs.writeFileSync(
+      validTemplatePath,
+      JSON.stringify({
+        title: 'Valid template',
+        steps: [{ id: 'step-1', prompt: 'Build {{project.name}}.' }]
+      })
+    );
+    require('inquirer').prompt = async () => ({
+      experienceLevel: 'Beginner',
+      projectName: 'Valid project',
+      projectIdea: 'A project that initializes successfully.'
+    });
+    process.exitCode = 0;
+    await runInit({ template: validTemplatePath }, successfulInitDir);
+    assert.strictEqual(process.exitCode, 0, 'Successful initialization must keep the exit code at zero');
+    assert.strictEqual(isInitialized(successfulInitDir), true, 'Valid template should initialize the project');
+  } finally {
+    require('inquirer').prompt = originalPrompt;
+    process.exitCode = undefined;
+    fs.rmSync(successfulInitDir, { recursive: true, force: true });
   }
 
   // Cleanup temp dir
