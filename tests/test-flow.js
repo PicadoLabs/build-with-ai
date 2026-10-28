@@ -2438,6 +2438,24 @@ async function runTests() {
   assert.ok(calls[0].url.endsWith('/chat/completions'), 'OpenAI-compatible path');
   assert.strictEqual(calls[0].init.headers.authorization, 'Bearer k');
   assert.strictEqual(JSON.parse(calls[0].init.body).model, 'gpt-4o-mini');
+  assert.strictEqual(
+    JSON.parse(calls[0].init.body).temperature,
+    0.2,
+    'Standard OpenAI models still send the default temperature'
+  );
+
+  for (const model of ['o1', 'o1-mini', 'o1-preview', 'o3-mini']) {
+    calls.length = 0;
+    await chatCompletion({ kind: 'openai', baseUrl: 'https://api.openai.com/v1', model, apiKey: 'k' }, messages, {
+      fetchImpl: mockFetch({ choices: [{ message: { content: 'reasoned' } }] })
+    });
+    const reasoningBody = JSON.parse(calls[0].init.body);
+    assert.strictEqual(reasoningBody.model, model);
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(reasoningBody, 'temperature'),
+      `Reasoning model ${model} must not send temperature`
+    );
+  }
 
   calls.length = 0;
   await chatCompletion(
