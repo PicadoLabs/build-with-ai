@@ -2565,6 +2565,21 @@ async function runTests() {
     ['Dockerfile'],
     'declared target files are always accepted'
   );
+  // Language tag before the path still yields a file block, and CRLF
+  // responses are normalized instead of leaving a trailing \r (#184)
+  const tagged = '```typescript src/app.ts\nconst x = 1;\n```';
+  assert.deepStrictEqual(
+    parseFileBlocks(tagged).map((b) => b.path),
+    ['src/app.ts'],
+    'language tag before the path must not drop the block'
+  );
+  const taggedCrlf = '```javascript src/app.js\r\nconsole.log(1);\r\n```';
+  const taggedCrlfBlocks = parseFileBlocks(taggedCrlf);
+  assert.strictEqual(taggedCrlfBlocks.length, 1, 'language-tagged CRLF block parses');
+  assert.strictEqual(taggedCrlfBlocks[0].path, 'src/app.js');
+  assert.strictEqual(taggedCrlfBlocks[0].content, 'console.log(1);', 'CRLF normalized, no trailing \\r');
+  const crlf = '```src/app.js\r\nline1\r\nline2\r\n```';
+  assert.strictEqual(parseFileBlocks(crlf)[0].content, 'line1\nline2', 'CRLF line endings normalized to LF');
   console.log('  ✔ File-block and decisions parsing.');
 
   // Safe paths: traversal and absolute paths are rejected
