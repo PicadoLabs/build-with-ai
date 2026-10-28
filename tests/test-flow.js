@@ -1268,6 +1268,61 @@ async function runTests() {
     fs.rmSync(undoDir, { recursive: true, force: true });
   }
 
+  console.log('\n▶ Regression: Undo chooses the most recently rewritten snapshot');
+  const redoUndoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-redo-undo-'));
+  try {
+    initState(
+      {
+        projectName: 'Redo Undo Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Intermediate',
+        projectIdea: 'A non-linear undo demo.',
+        totalSteps: 4
+      },
+      redoUndoDir
+    );
+
+    for (let step = 1; step <= 4; step++) {
+      const beforeState = loadState(redoUndoDir);
+      beforeState.currentStep = step;
+      beforeState.completedSteps = Array.from({ length: step - 1 }, (_, index) => index + 1);
+      saveState(beforeState, redoUndoDir);
+      saveContext({ project: { name: 'Redo Undo Demo' }, decisions: { lastCompletedStep: step - 1 } }, redoUndoDir);
+      saveSnapshot(step, redoUndoDir);
+
+      const afterState = loadState(redoUndoDir);
+      afterState.currentStep = step + 1;
+      afterState.completedSteps.push(step);
+      saveState(afterState, redoUndoDir);
+      saveContext({ project: { name: 'Redo Undo Demo' }, decisions: { lastCompletedStep: step } }, redoUndoDir);
+    }
+
+    const rewoundState = loadState(redoUndoDir);
+    rewoundState.currentStep = 2;
+    rewoundState.completedSteps = [1];
+    saveState(rewoundState, redoUndoDir);
+    saveContext({ project: { name: 'Redo Undo Demo' }, decisions: { lastCompletedStep: 1 } }, redoUndoDir);
+    const redoneSnapshot = saveSnapshot(2, redoUndoDir);
+    const newestTime = new Date(Date.now() + 10_000);
+    fs.utimesSync(redoneSnapshot, newestTime, newestTime);
+
+    const redoneState = loadState(redoUndoDir);
+    redoneState.currentStep = 3;
+    redoneState.completedSteps = [1, 2];
+    saveState(redoneState, redoUndoDir);
+    saveContext({ project: { name: 'Redo Undo Demo' }, decisions: { lastCompletedStep: 2 } }, redoUndoDir);
+
+    assert.strictEqual(listSnapshots(redoUndoDir).at(-1).step, 2, 're-completed step snapshot should be newest');
+    assert.deepStrictEqual(undoLastStep(redoUndoDir), { step: 2 }, 'undo should roll back the re-completed step');
+    assert.strictEqual(loadState(redoUndoDir).currentStep, 2);
+    assert.deepStrictEqual(loadState(redoUndoDir).completedSteps, [1]);
+    assert.strictEqual(loadContext(redoUndoDir).decisions.lastCompletedStep, 1);
+    console.log('  ✔ Undo follows snapshot modification time after non-linear navigation.');
+  } finally {
+    fs.rmSync(redoUndoDir, { recursive: true, force: true });
+  }
+
   console.log('\n▶ Test 9c: Step Cancellation Snapshots & Context Reversion');
   const cancelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-cancel-'));
   try {
