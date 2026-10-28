@@ -2798,7 +2798,7 @@ async function runTests() {
     global.fetch = async () => ({ ok: false, status: 404 });
     process.exitCode = 0;
     try {
-      await runInit({ template: 'https://example.test/missing-template.json' }, failedInitDir);
+      await runInit({ force: true, template: 'https://example.test/missing-template.json' }, failedInitDir);
       assert.strictEqual(process.exitCode, 1, 'Failed remote template loading must set a failing exit code');
     } finally {
       global.fetch = originalFetch;
