@@ -2599,6 +2599,13 @@ async function runTests() {
       'Project state directory is reserved'
     );
     assert.strictEqual(resolveTargetPath(safeDir, 'node_modules/foo/bar.js'), null, 'node_modules is reserved');
+    assert.strictEqual(resolveTargetPath(safeDir, '.githooks/pre-commit'), null, 'Git hooks directory is reserved');
+    assert.strictEqual(
+      resolveTargetPath(safeDir, '.github/workflows/ci.yml'),
+      null,
+      'GitHub workflows directory is reserved'
+    );
+    assert.strictEqual(resolveTargetPath(safeDir, '.env'), null, 'Root .env file is reserved');
     assert.strictEqual(
       resolveTargetPath(safeDir, '.env.example'),
       path.join(safeDir, '.env.example'),
@@ -2618,10 +2625,16 @@ async function runTests() {
 
     const reserved = writeFileBlocks(safeDir, [
       { path: '.git/hooks/pre-commit', content: 'evil' },
-      { path: '.buildwithai/state.json', content: 'evil' }
+      { path: '.buildwithai/state.json', content: 'evil' },
+      { path: '.githooks/pre-commit', content: 'evil' },
+      { path: '.github/workflows/ci.yml', content: 'evil' },
+      { path: '.env', content: 'evil' }
     ]);
     assert.strictEqual(reserved[0].written, false, 'Reserved git-hook block is skipped, never written');
     assert.strictEqual(reserved[1].written, false, 'Reserved state block is skipped, never written');
+    assert.strictEqual(reserved[2].written, false, 'Reserved githooks block is skipped, never written');
+    assert.strictEqual(reserved[3].written, false, 'Reserved workflows block is skipped, never written');
+    assert.strictEqual(reserved[4].written, false, 'Reserved .env block is skipped, never written');
     assert.ok(!fs.existsSync(path.join(safeDir, '.git')), 'Reserved .git directory must not be created');
 
     const diff = renderDiff('line1\nline2\nline3\n', 'line1\nCHANGED\nline3\n', { color: false });
