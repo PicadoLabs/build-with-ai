@@ -16,7 +16,7 @@
     "CONTRIBUTING.md"
   ],
   "scripts": {
-    "test": "node tests/test-flow.js",
+    "test": "node tests/test-flow.js && node tests/test-readme-setup.js",
     "test:e2e": "node tests/e2e-test.js",
     "test:all": "node tests/test-flow.js && node tests/e2e-test.js",
     "lint": "eslint \"{bin,lib,tests,.github/scripts}/**/*.js\"",
