@@ -1,19 +1,55 @@
-dx:
+area:cli:
   - changed-files:
-      - any-glob-to-any-file: ['bin/**', 'lib/**']
+      - any-glob-to-any-file:
+          - 'bin/**'
+          - 'lib/ui.js'
+          - 'lib/configEditor.js'
+          - 'lib/clipboard.js'
+          - 'lib/logger.js'
+          - 'lib/init.js'
+          - 'lib/resume.js'
 
-templates:
+area:mcp:
   - changed-files:
-      - any-glob-to-any-file: ['templates/**']
+      - any-glob-to-any-file:
+          - 'lib/mcp.js'
 
-tests:
+area:ai-client:
   - changed-files:
-      - any-glob-to-any-file: ['tests/**']
+      - any-glob-to-any-file:
+          - 'lib/aiClient.js'
+          - 'lib/models.js'
 
-documentation:
+area:parser:
   - changed-files:
-      - any-glob-to-any-file: ['README.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'docs/**', '*.md']
+      - any-glob-to-any-file:
+          - 'lib/decisionParser.js'
 
-ci:
+area:templates:
   - changed-files:
-      - any-glob-to-any-file: ['.github/**', '.githooks/**']
+      - any-glob-to-any-file:
+          - 'templates/**'
+          - 'lib/validator.js'
+          - 'lib/registry.js'
+          - 'lib/promptEngine.js'
+
+area:export:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'lib/export.js'
+          - 'lib/rules.js'
+
+area:state:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'lib/state.js'
+          - 'lib/contextBuilder.js'
+
+type:docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'README.md'
+          - 'CONTRIBUTING.md'
+          - 'CHANGELOG.md'
+          - 'docs/**'
+          - '*.md'

@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0] - 2026-10-29
+
+### Added
+- **BYOK Autonomous Execution Engine (`next --run`):** Opt-in autonomous model execution supporting OpenAI, Anthropic, Gemini, DeepSeek, Groq, Together, and local Ollama. Generates file diff previews with `--review`, parses generated files and decisions, writes changes safely, and automatically gitignores `.buildwithai/.env`.
+- **Native Model Context Protocol (MCP) Stdio Server (`mcp`):** Exposes `get_workflow_status`, `get_active_prompt`, `complete_step`, and `get_context` tools via standard JSON-RPC 2.0 stdio protocol for AI editor agents (Cursor, Windsurf, Claude Code) and Claude Desktop.
+- **Undo Snapshots & Rollback (`undo`):** Pre-step snapshots stored in `.buildwithai/snapshots/` enable rolling back step counters, restoring previous `context.json` decisions, and deleting step history files.
+- **Editor Rules Synchronization (`export --rules`):** Exports and synchronizes recorded architectural decisions into `.cursorrules`, `.cursor/rules/project-decisions.mdc`, `.windsurfrules`, `CLAUDE.md`, and `.github/copilot-instructions.md`, preserving custom instructions outside the managed block.
+- **Interactive Configuration Editor (`config`):** Interactive key picker and editor to browse and update stored decisions with automatic JSON parsing and validation.
+- **Community Template Registry Search (`search`):** Query remote community templates from registry and initialize projects with single-click workflow templates.
+- **Branch-Scoped Storage (`BUILD_WITH_AI_BRANCH_SCOPED=1`):** Optional environment flag to isolate project state, context, and history per git branch under `.buildwithai/branches/<branch-name>/`.
+- **Pre-Flight Target Files Verification:** Soft check on step target files and git status changes during `done`.
+- **Heuristic Clipboard Decisions Parsing (`done --from-clipboard`):** Automatically extract structured decisions directly from clipboard responses.
+- **Model Capability Aliasing (`models`):** Dynamic model capability mappings and command to inspect recommended models for engineering tasks.
+
+### Changed
+- **Safe Interactive Prompts (`safePrompt`):** Replaced direct prompt handling with graceful SIGINT / Ctrl+C cancellation exiting with code 130.
+- **Workspace Template Persistence:** Custom local and remote templates persist to `.buildwithai/template.json` for offline resolution across all commands.
+- **Export Conflict Safety:** Safeguards existing `README.md` on export by offering `README.ai.md` fallback unless `--force` is supplied.
+- **Windows Console Glyphs:** Added UTF-8 detection and ASCII fallback glyphs for legacy Windows CMD consoles.
+- **CI & Label Taxonomy:** Migrated PR auto-labeler to scoped taxonomy (`type:*`, `area:*`, `priority:*`, `status:*`).
+
+### Fixed
+- **Language-Tagged Markdown Fences Parsing:** Normalized CRLF and permitted language identifiers on code fences in `parseFileBlocks` (#184, #204).
+- **Security Path Traversal Restrictions:** Blocked autonomous model writes to `.git`, `.buildwithai`, `node_modules`, and parent directories (#179).
+- **Unprefixed Decisions Parsing:** Supported unprefixed and nested keys in autonomous decision blocks (#177, #202).
+- **CLI Cancel Exit Codes:** Ensured proper non-zero exit codes on user cancellations and custom template fetch aborts (#194, #200).
+- **Step Snapshot Cleanup:** Reverted context decisions and cleaned pending snapshots on step cancellations and validation failures (#167, #176).
+- **Completed Steps Deduplication:** Fixed progress bar calculation by deduplicating completed step counts (#163, #178).
+- **Atomic File Writes on Windows:** Added retry logic for transient Windows file locks during atomic JSON updates (#86).
+- **Context Path Security:** Prevented prototype pollution in context builder helpers (#82).
+
+---
+
 ## [1.3.0] - 2026-10-03
 
 ### Added

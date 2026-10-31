@@ -1133,6 +1133,21 @@ async function runTests() {
   const objectContract = buildArchitecturalContract({ decisions: { auth: { provider: 'Auth0', mfa: true } } });
   assert(objectContract.includes('- Authentication:'), 'Object decision is anchored');
   assert(objectContract.includes('"provider":"Auth0"'), 'Object decision renders as JSON');
+  // Regression (#190): canonical object decisions must not repeat their flattened leaf keys.
+  const nestedContract = buildArchitecturalContract({
+    decisions: {
+      database: { name: 'PostgreSQL', orm: 'Prisma' },
+      auth: { provider: 'Auth0', mfa: true },
+      cache: { provider: 'Redis', ttl: 3600 }
+    }
+  });
+  const nestedLines = nestedContract.split('\n');
+  assert(nestedLines.includes('- Database / ORM: {"name":"PostgreSQL","orm":"Prisma"}'));
+  assert(nestedLines.includes('- Authentication: {"provider":"Auth0","mfa":true}'));
+  assert(!nestedLines.some((line) => line.startsWith('- Database.')), 'Database leaves must not be repeated');
+  assert(!nestedLines.some((line) => line.startsWith('- Auth.')), 'Authentication leaves must not be repeated');
+  assert(nestedLines.includes('- Cache.provider: Redis'), 'Unanchored nested decisions remain visible');
+  assert(nestedLines.includes('- Cache.ttl: 3600'), 'Other nested leaves remain visible');
   console.log('  ✔ Architectural contract anchoring verified.');
 
   // Test 9: `back` Command Logic
@@ -1267,6 +1282,61 @@ async function runTests() {
     console.log('  ✔ undo restores step counter and context decisions, cleans history, and falls back safely.');
   } finally {
     fs.rmSync(undoDir, { recursive: true, force: true });
+  }
+
+  console.log('\n▶ Regression: Undo chooses the most recently rewritten snapshot');
+  const redoUndoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-redo-undo-'));
+  try {
+    initState(
+      {
+        projectName: 'Redo Undo Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Intermediate',
+        projectIdea: 'A non-linear undo demo.',
+        totalSteps: 4
+      },
+      redoUndoDir
+    );
+
+    for (let step = 1; step <= 4; step++) {
+      const beforeState = loadState(redoUndoDir);
+      beforeState.currentStep = step;
+      beforeState.completedSteps = Array.from({ length: step - 1 }, (_, index) => index + 1);
+      saveState(beforeState, redoUndoDir);
+      saveContext({ project: { name: 'Redo Undo Demo' }, decisions: { lastCompletedStep: step - 1 } }, redoUndoDir);
+      saveSnapshot(step, redoUndoDir);
+
+      const afterState = loadState(redoUndoDir);
+      afterState.currentStep = step + 1;
+      afterState.completedSteps.push(step);
+      saveState(afterState, redoUndoDir);
+      saveContext({ project: { name: 'Redo Undo Demo' }, decisions: { lastCompletedStep: step } }, redoUndoDir);
+    }
+
+    const rewoundState = loadState(redoUndoDir);
+    rewoundState.currentStep = 2;
+    rewoundState.completedSteps = [1];
+    saveState(rewoundState, redoUndoDir);
+    saveContext({ project: { name: 'Redo Undo Demo' }, decisions: { lastCompletedStep: 1 } }, redoUndoDir);
+    const redoneSnapshot = saveSnapshot(2, redoUndoDir);
+    const newestTime = new Date(Date.now() + 10_000);
+    fs.utimesSync(redoneSnapshot, newestTime, newestTime);
+
+    const redoneState = loadState(redoUndoDir);
+    redoneState.currentStep = 3;
+    redoneState.completedSteps = [1, 2];
+    saveState(redoneState, redoUndoDir);
+    saveContext({ project: { name: 'Redo Undo Demo' }, decisions: { lastCompletedStep: 2 } }, redoUndoDir);
+
+    assert.strictEqual(listSnapshots(redoUndoDir).at(-1).step, 2, 're-completed step snapshot should be newest');
+    assert.deepStrictEqual(undoLastStep(redoUndoDir), { step: 2 }, 'undo should roll back the re-completed step');
+    assert.strictEqual(loadState(redoUndoDir).currentStep, 2);
+    assert.deepStrictEqual(loadState(redoUndoDir).completedSteps, [1]);
+    assert.strictEqual(loadContext(redoUndoDir).decisions.lastCompletedStep, 1);
+    console.log('  ✔ Undo follows snapshot modification time after non-linear navigation.');
+  } finally {
+    fs.rmSync(redoUndoDir, { recursive: true, force: true });
   }
 
   console.log('\n▶ Test 9c: Step Cancellation Snapshots & Context Reversion');
@@ -1457,6 +1527,9 @@ async function runTests() {
     assert(claude.includes('Next.js 14'), 'rules must contain the tech stack');
     assert(claude.includes('PostgreSQL with Prisma'), 'rules must contain the database choice');
     assert(claude.includes('Vercel'), 'rules must contain the hosting decision');
+    assert(claude.includes('- Hosting: Vercel'), 'hosting must appear under Tech stack');
+    assert.strictEqual(claude.split('Vercel').length - 1, 1, 'hosting decision must appear only once');
+    assert(!claude.includes('**Deployment Platform:**'), 'hosting must not repeat under Decisions');
     assert(claude.includes(RULES_BLOCK_START) && claude.includes(RULES_BLOCK_END), 'managed block markers present');
 
     const mdc = fs.readFileSync(path.join(rulesDir, '.cursor', 'rules', 'project-decisions.mdc'), 'utf8');
@@ -2439,6 +2512,24 @@ async function runTests() {
   assert.ok(calls[0].url.endsWith('/chat/completions'), 'OpenAI-compatible path');
   assert.strictEqual(calls[0].init.headers.authorization, 'Bearer k');
   assert.strictEqual(JSON.parse(calls[0].init.body).model, 'gpt-4o-mini');
+  assert.strictEqual(
+    JSON.parse(calls[0].init.body).temperature,
+    0.2,
+    'Standard OpenAI models still send the default temperature'
+  );
+
+  for (const model of ['o1', 'o1-mini', 'o1-preview', 'o3-mini']) {
+    calls.length = 0;
+    await chatCompletion({ kind: 'openai', baseUrl: 'https://api.openai.com/v1', model, apiKey: 'k' }, messages, {
+      fetchImpl: mockFetch({ choices: [{ message: { content: 'reasoned' } }] })
+    });
+    const reasoningBody = JSON.parse(calls[0].init.body);
+    assert.strictEqual(reasoningBody.model, model);
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(reasoningBody, 'temperature'),
+      `Reasoning model ${model} must not send temperature`
+    );
+  }
 
   calls.length = 0;
   await chatCompletion(
@@ -2566,6 +2657,21 @@ async function runTests() {
     ['Dockerfile'],
     'declared target files are always accepted'
   );
+  // Language tag before the path still yields a file block, and CRLF
+  // responses are normalized instead of leaving a trailing \r (#184)
+  const tagged = '```typescript src/app.ts\nconst x = 1;\n```';
+  assert.deepStrictEqual(
+    parseFileBlocks(tagged).map((b) => b.path),
+    ['src/app.ts'],
+    'language tag before the path must not drop the block'
+  );
+  const taggedCrlf = '```javascript src/app.js\r\nconsole.log(1);\r\n```';
+  const taggedCrlfBlocks = parseFileBlocks(taggedCrlf);
+  assert.strictEqual(taggedCrlfBlocks.length, 1, 'language-tagged CRLF block parses');
+  assert.strictEqual(taggedCrlfBlocks[0].path, 'src/app.js');
+  assert.strictEqual(taggedCrlfBlocks[0].content, 'console.log(1);', 'CRLF normalized, no trailing \\r');
+  const crlf = '```src/app.js\r\nline1\r\nline2\r\n```';
+  assert.strictEqual(parseFileBlocks(crlf)[0].content, 'line1\nline2', 'CRLF line endings normalized to LF');
   console.log('  ✔ File-block and decisions parsing.');
 
   // Alternative auth decision keys surface in export and rules (#195)
@@ -2604,6 +2710,13 @@ async function runTests() {
       'Project state directory is reserved'
     );
     assert.strictEqual(resolveTargetPath(safeDir, 'node_modules/foo/bar.js'), null, 'node_modules is reserved');
+    assert.strictEqual(resolveTargetPath(safeDir, '.githooks/pre-commit'), null, 'Git hooks directory is reserved');
+    assert.strictEqual(
+      resolveTargetPath(safeDir, '.github/workflows/ci.yml'),
+      null,
+      'GitHub workflows directory is reserved'
+    );
+    assert.strictEqual(resolveTargetPath(safeDir, '.env'), null, 'Root .env file is reserved');
     assert.strictEqual(
       resolveTargetPath(safeDir, '.env.example'),
       path.join(safeDir, '.env.example'),
@@ -2623,10 +2736,16 @@ async function runTests() {
 
     const reserved = writeFileBlocks(safeDir, [
       { path: '.git/hooks/pre-commit', content: 'evil' },
-      { path: '.buildwithai/state.json', content: 'evil' }
+      { path: '.buildwithai/state.json', content: 'evil' },
+      { path: '.githooks/pre-commit', content: 'evil' },
+      { path: '.github/workflows/ci.yml', content: 'evil' },
+      { path: '.env', content: 'evil' }
     ]);
     assert.strictEqual(reserved[0].written, false, 'Reserved git-hook block is skipped, never written');
     assert.strictEqual(reserved[1].written, false, 'Reserved state block is skipped, never written');
+    assert.strictEqual(reserved[2].written, false, 'Reserved githooks block is skipped, never written');
+    assert.strictEqual(reserved[3].written, false, 'Reserved workflows block is skipped, never written');
+    assert.strictEqual(reserved[4].written, false, 'Reserved .env block is skipped, never written');
     assert.ok(!fs.existsSync(path.join(safeDir, '.git')), 'Reserved .git directory must not be created');
 
     const diff = renderDiff('line1\nline2\nline3\n', 'line1\nCHANGED\nline3\n', { color: false });
@@ -2799,7 +2918,10 @@ async function runTests() {
     saveHistory(1, '# Step 1 AI Response', failedInitDir);
     const stateBefore = fs.readFileSync(path.join(getStorageDir(failedInitDir), 'state.json'), 'utf8');
 
+    const priorExitCode = process.exitCode;
+    process.exitCode = 0;
     await runInit({ force: true, template: path.join(failedInitDir, 'non-existent.json') }, failedInitDir);
+    assert.strictEqual(process.exitCode, 1, 'Failed custom template loading must set a failing exit code');
 
     assert.strictEqual(isInitialized(failedInitDir), true, 'Failed template load must not delete existing state');
     assert.strictEqual(
@@ -2813,8 +2935,46 @@ async function runTests() {
       'History must survive a failed template load'
     );
     console.log('  ✔ Existing .buildwithai state preserved when the custom template fails to load.');
+
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({ ok: false, status: 404 });
+    process.exitCode = 0;
+    try {
+      await runInit({ force: true, template: 'https://example.test/missing-template.json' }, failedInitDir);
+      assert.strictEqual(process.exitCode, 1, 'Failed remote template loading must set a failing exit code');
+    } finally {
+      global.fetch = originalFetch;
+      process.exitCode = priorExitCode;
+    }
   } finally {
     fs.rmSync(failedInitDir, { recursive: true, force: true });
+  }
+
+  console.log('\n▶ Regression: Successful template initialization preserves a zero exit code');
+  const successfulInitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-successful-init-'));
+  const validTemplatePath = path.join(successfulInitDir, 'valid-template.json');
+  const originalPrompt = require('inquirer').prompt;
+  try {
+    fs.writeFileSync(
+      validTemplatePath,
+      JSON.stringify({
+        title: 'Valid template',
+        steps: [{ id: 'step-1', prompt: 'Build {{project.name}}.' }]
+      })
+    );
+    require('inquirer').prompt = async () => ({
+      experienceLevel: 'Beginner',
+      projectName: 'Valid project',
+      projectIdea: 'A project that initializes successfully.'
+    });
+    process.exitCode = 0;
+    await runInit({ template: validTemplatePath }, successfulInitDir);
+    assert.strictEqual(process.exitCode, 0, 'Successful initialization must keep the exit code at zero');
+    assert.strictEqual(isInitialized(successfulInitDir), true, 'Valid template should initialize the project');
+  } finally {
+    require('inquirer').prompt = originalPrompt;
+    process.exitCode = undefined;
+    fs.rmSync(successfulInitDir, { recursive: true, force: true });
   }
 
   // Cleanup temp dir

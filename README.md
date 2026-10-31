@@ -8,7 +8,7 @@
 [![npm version](https://img.shields.io/npm/v/build-with-ai.svg?style=flat&color=3b82f6)](https://www.npmjs.com/package/build-with-ai)
 [![npm downloads](https://img.shields.io/npm/dt/build-with-ai.svg?style=flat&color=10b981&label=downloads)](https://www.npmjs.com/package/build-with-ai)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
-[![Node >= 16](https://img.shields.io/badge/node-%3E%3D18.0.0-f59e0b.svg)](https://nodejs.org)
+[![Node >= 18](https://img.shields.io/badge/node-%3E%3D18.0.0-f59e0b.svg)](https://nodejs.org)
 [![Zero API Keys](https://img.shields.io/badge/AI_API-None_(100%25_Local)-8b5cf6.svg)](README.md)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
@@ -280,6 +280,7 @@ Need to revise a prior step? `undo` safely rolls back the step counter to the pr
 | `npx build-with-ai export --force` | Overwrite an existing `README.md` explicitly. |
 | `npx build-with-ai list [-s <query>] [--json]` | List and search available templates with step counts. |
 | `npx build-with-ai search [keyword]` | Search remote community template registry and initialize with one click. |
+| `npx build-with-ai models` | Display active AI model capability mappings and recommended models. |
 | `npx build-with-ai reset` | Remove `.buildwithai/` state while leaving project source code intact. |
 | `npx build-with-ai mcp` | Start a native MCP stdio server exposing the workflow as tools. |
 
