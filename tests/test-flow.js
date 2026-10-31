@@ -2696,6 +2696,52 @@ async function runTests() {
   assert(generateReadme({}, bothCtx).includes('NextAuth.js'), 'authStrategy takes precedence');
   assert(!generateReadme({}, bothCtx).includes('Clerk'), 'fallback alias must not appear when authStrategy present');
 
+  // Regression (#186): autonomous runs save all decisions under context.decisions.
+  const autonomousDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-autonomous-decisions-'));
+  try {
+    initState(
+      {
+        projectName: 'Autonomous Decisions Demo',
+        templateId: 'web-app',
+        templateTitle: 'Full-Stack Web Application',
+        experienceLevel: 'Beginner',
+        projectIdea: 'Verify decision namespace',
+        totalSteps: webAppTemplate.stepCount
+      },
+      autonomousDir
+    );
+    const decisionReply = [
+      '```decisions',
+      '{"database":"PostgreSQL","decisions.authStrategy":"NextAuth.js","deploymentPlatform":"Vercel"}',
+      '```'
+    ].join('\n');
+    const responseBody = JSON.stringify({ choices: [{ message: { content: decisionReply } }] });
+    const preload = path.join(autonomousDir, 'mock-ai.js');
+    const mockFetchBody = JSON.stringify(responseBody);
+    const mockFetchSource = `globalThis.fetch = async () => ({ ok: true, text: async () => ${mockFetchBody} });\n`;
+    fs.writeFileSync(preload, mockFetchSource, 'utf8');
+    const execution = require('child_process').spawnSync(
+      process.execPath,
+      ['--require', preload, path.join(__dirname, '..', 'bin', 'cli.js'), 'next', '--run', '--provider', 'ollama'],
+      { cwd: autonomousDir, encoding: 'utf8', timeout: 15000 }
+    );
+    assert.strictEqual(execution.status, 0, `Autonomous run failed: ${execution.stderr}`);
+    const autonomousContext = loadContext(autonomousDir);
+    assert.strictEqual(autonomousContext.decisions.database, 'PostgreSQL');
+    assert.strictEqual(autonomousContext.decisions.authStrategy, 'NextAuth.js');
+    assert.strictEqual(autonomousContext.decisions.deploymentPlatform, 'Vercel');
+    assert.strictEqual(autonomousContext.database, undefined, 'No decision should leak to the root');
+    assert.strictEqual(autonomousContext['decisions.authStrategy'], undefined, 'No literal dotted root key');
+    const autonomousState = loadState(autonomousDir);
+    assert.deepStrictEqual(autonomousState.completedSteps, [1]);
+    assert.strictEqual(autonomousState.currentStep, 2);
+    assert(generateReadme({}, autonomousContext).includes('PostgreSQL'), 'Export recognizes captured database');
+    assert(generateRulesContent(autonomousContext).includes('PostgreSQL'), 'Rules recognize captured database');
+  } finally {
+    fs.rmSync(autonomousDir, { recursive: true, force: true });
+  }
+  console.log('  ✔ Autonomous decisions use context.decisions for plain and prefixed keys.');
+
   // Safe paths: traversal and absolute paths are rejected
   const safeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-aiclient-'));
   try {

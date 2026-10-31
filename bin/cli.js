@@ -261,8 +261,10 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
   try {
     const decisions = parseDecisionsBlock(response);
     for (const [key, value] of Object.entries(decisions)) {
-      if (typeof key === 'string' && key.trim() && setByPath(context, key, value)) {
-        recorded.push(key);
+      if (!key.trim()) continue;
+      const targetKey = key.startsWith('decisions.') ? key : `decisions.${key}`;
+      if (setByPath(context, targetKey, value)) {
+        recorded.push(targetKey);
       }
     }
     if (recorded.length > 0) {
