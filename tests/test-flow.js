@@ -1498,7 +1498,13 @@ async function runTests() {
     saveContext(
       {
         project: { name: 'Rules Demo', idea: 'A demo project.' },
-        decisions: { frontendStack: 'Next.js 14', database: 'PostgreSQL with Prisma', deploymentPlatform: 'Vercel' }
+        decisions: {
+          frontendStack: 'Next.js 14',
+          database: 'PostgreSQL with Prisma',
+          deploymentPlatform: 'Vercel',
+          customApi: 'Custom API decision',
+          scratchNotes: 'Private scratch notes'
+        }
       },
       rulesDir
     );
@@ -1530,6 +1536,8 @@ async function runTests() {
     assert(claude.includes('- Hosting: Vercel'), 'hosting must appear under Tech stack');
     assert.strictEqual(claude.split('Vercel').length - 1, 1, 'hosting decision must appear only once');
     assert(!claude.includes('**Deployment Platform:**'), 'hosting must not repeat under Decisions');
+    assert(claude.includes('Custom API decision'), 'default rules export must include custom decisions');
+    assert(claude.includes('Private scratch notes'), 'default rules export must include all decisions');
     assert(claude.includes(RULES_BLOCK_START) && claude.includes(RULES_BLOCK_END), 'managed block markers present');
 
     const mdc = fs.readFileSync(path.join(rulesDir, '.cursor', 'rules', 'project-decisions.mdc'), 'utf8');
@@ -1550,6 +1558,83 @@ async function runTests() {
     const claude2 = fs.readFileSync(path.join(rulesDir, 'CLAUDE.md'), 'utf8');
     assert.strictEqual(claude2.split(RULES_BLOCK_START).length - 1, 1, 're-sync must not duplicate the managed block');
     assert(claude2.includes('PostgreSQL with Prisma'), 're-sync keeps generated content fresh');
+
+    // Include and exclude filters cover every generated section; exclusions win.
+    fs.writeFileSync(
+      path.join(rulesDir, '.buildwithai', 'rules.config.json'),
+      JSON.stringify(
+        {
+          includeKeys: ['decisions.database', 'decisions.customApi'],
+          excludeKeys: ['decisions.database', 'decisions.scratchNotes']
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+    await runRulesExport(rulesDir);
+    const filteredFiles = expectedFiles.map((rel) => fs.readFileSync(path.join(rulesDir, rel), 'utf8'));
+    for (const content of filteredFiles) {
+      assert(content.includes('Custom API decision'), 'included decisions must appear in every editor rule file');
+      assert(!content.includes('PostgreSQL with Prisma'), 'excluded database must not leak through Tech stack');
+      assert(!content.includes('Private scratch notes'), 'excluded decisions must not appear in rule files');
+      assert(!content.includes('Next.js 14'), 'decisions outside includeKeys must be omitted');
+    }
+    assert(
+      fs.readFileSync(path.join(rulesDir, '.windsurfrules'), 'utf8').includes(customNote),
+      'filtered re-sync must preserve custom instructions'
+    );
+
+    fs.writeFileSync(
+      path.join(rulesDir, '.buildwithai', 'rules.config.json'),
+      JSON.stringify({ includeKeys: ['decisions.customApi'] }),
+      'utf8'
+    );
+    await runRulesExport(rulesDir);
+    for (const rel of expectedFiles) {
+      const content = fs.readFileSync(path.join(rulesDir, rel), 'utf8');
+      assert(content.includes('Custom API decision'), 'includeKeys must work without excludeKeys');
+      assert(!content.includes('PostgreSQL with Prisma'), 'includeKeys must omit unselected Tech stack decisions');
+    }
+
+    fs.writeFileSync(
+      path.join(rulesDir, '.buildwithai', 'rules.config.json'),
+      JSON.stringify({ includeKeys: ['decisions.database'] }),
+      'utf8'
+    );
+    await runRulesExport(rulesDir);
+    for (const rel of expectedFiles) {
+      const content = fs.readFileSync(path.join(rulesDir, rel), 'utf8');
+      assert(
+        content.includes('- Database: PostgreSQL with Prisma'),
+        'explicitly included database appears in Tech stack'
+      );
+      assert(!content.includes('Custom API decision'), 'includeKeys excludes decisions not selected');
+    }
+
+    fs.writeFileSync(
+      path.join(rulesDir, '.buildwithai', 'rules.config.json'),
+      JSON.stringify({ excludeKeys: ['decisions.database', 'decisions.scratchNotes'] }),
+      'utf8'
+    );
+    await runRulesExport(rulesDir);
+    for (const rel of expectedFiles) {
+      const content = fs.readFileSync(path.join(rulesDir, rel), 'utf8');
+      assert(content.includes('Next.js 14'), 'unconfigured decisions remain included with excludeKeys only');
+      assert(!content.includes('PostgreSQL with Prisma'), 'excludeKeys must filter Tech stack decisions');
+      assert(!content.includes('Private scratch notes'), 'excludeKeys must filter other decisions');
+    }
+
+    const rulesFilesBeforeInvalidConfig = expectedFiles.map((rel) => fs.readFileSync(path.join(rulesDir, rel), 'utf8'));
+    fs.writeFileSync(path.join(rulesDir, '.buildwithai', 'rules.config.json'), '{ malformed json', 'utf8');
+    assert.strictEqual(await runRulesExport(rulesDir), false, 'malformed rules config must fail export');
+    for (let index = 0; index < expectedFiles.length; index++) {
+      assert.strictEqual(
+        fs.readFileSync(path.join(rulesDir, expectedFiles[index]), 'utf8'),
+        rulesFilesBeforeInvalidConfig[index],
+        'malformed rules config must not modify existing rule files'
+      );
+    }
 
     // Unit checks for the merge helper.
     assert.strictEqual(
