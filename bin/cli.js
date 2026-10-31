@@ -132,10 +132,17 @@ program
   .command('init')
   .description('Initialize a new AI-guided project workflow in the current directory.')
   .option('-f, --force', 'Force re-initialization if project already exists')
-  .option('-t, --template <path-or-url>', 'Load a custom template from a local file path or remote HTTPS URL')
+  .option(
+    '-t, --template <id|path|url>',
+    'Use a built-in template by ID, or load a custom template from a local file path or remote HTTPS URL'
+  )
+  .option('-y, --yes', 'Run without prompts, using defaults for any missing values')
+  .option('--name <string>', 'Project name for non-interactive initialization')
+  .option('--level <level>', 'Experience level: Beginner, Intermediate, or Experienced')
+  .option('--idea <string>', 'One-line project idea / problem description')
   .option('--rules', 'Sync editor rule files (.cursorrules, .windsurfrules, CLAUDE.md) from context.json after init')
   .action(async (options) => {
-    await runInit(options);
+    await runInit({ ...options, nonInteractive: !process.stdin.isTTY });
     if (options.rules) {
       if (!isInitialized()) return;
       if ((await runRulesExport(process.cwd(), {})) === false) process.exitCode = 1;
