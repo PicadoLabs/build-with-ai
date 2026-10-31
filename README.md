@@ -1,5 +1,3 @@
-# build-with-ai
-
 <div align="center">
 
 <pre>
