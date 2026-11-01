@@ -175,6 +175,7 @@ Custom templates are persisted to `.buildwithai/template.json` and work fully of
 | `npx build-with-ai config` | Interactive key-picker to browse and edit decisions. |
 | `npx build-with-ai history [step]` | Inspect archived AI responses and step logs. |
 | `npx build-with-ai resume` | Summary dashboard displaying active state and recommended next action. |
+| `npx build-with-ai ui` | Open a local browser dashboard for progress, phases, decisions, history, and exports. |
 
 ### Documentation & Editor Rules
 
@@ -230,6 +231,25 @@ Add to your editor configuration (`.cursor/mcp.json` or `claude_desktop_config.j
 ```
 
 Exposed tools: `get_workflow_status`, `get_active_prompt`, `complete_step`, and `get_context`. Steps completed via MCP automatically create safe rollback snapshots.
+
+### Local Browser Dashboard
+
+For larger templates, inspect the whole project in your browser instead of the terminal:
+
+```bash
+npx build-with-ai ui
+
+# Use another port, or skip opening the browser automatically
+npx build-with-ai ui --port 4000 --no-open
+```
+
+The dashboard is served by Node's built-in `http` module at `http://localhost:3721` and shows:
+- A progress bar and a workflow phase tree with completed, current, and pending steps
+- A decision explorer with search and phase filters
+- A history viewer for archived `history/step-XX.md` responses
+- One-click buttons to export documentation and sync editor rules
+
+It listens on `127.0.0.1` only, refreshes automatically as you run `done` in another terminal, and never overwrites an existing `README.md` (it writes `README.ai.md` instead). Press `Ctrl+C` to stop it.
 
 ### Editor Rules Synchronization
 
