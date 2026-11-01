@@ -4,11 +4,47 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>build-with-ai dashboard</title>
+    <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <main>
-      <h1>build-with-ai dashboard</h1>
-      <p>Project data is available at <a href="/api/project">/api/project</a>.</p>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div>
+          <p class="eyebrow">build-with-ai</p>
+          <h1 id="project-name">Loading project...</h1>
+          <p id="project-meta" class="muted"></p>
+        </div>
+        <div class="topbar-actions">
+          <span id="updated-at" class="muted small"></span>
+          <button id="refresh" type="button" class="button">Refresh</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <div id="error" class="banner banner-error" role="alert" hidden></div>
+
+      <section class="card" aria-labelledby="progress-heading">
+        <h2 id="progress-heading">Progress</h2>
+        <div
+          class="progress"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+          id="progress-bar"
+        >
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <dl class="stats" id="progress-stats"></dl>
+      </section>
+
+      <section class="card" aria-labelledby="phases-heading">
+        <h2 id="phases-heading">Workflow phases</h2>
+        <div id="phase-tree" class="phase-tree"></div>
+      </section>
     </main>
+
+    <script src="/app.js"></script>
   </body>
 </html>
