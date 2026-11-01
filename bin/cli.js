@@ -315,6 +315,37 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
 // deduplicated status logic).
 // ─────────────────────────────────────────────────
 
+/**
+ * Token budget for `next --json` (#215): what `next --run` would send (the
+ * step prompt plus the run system prompt) against the provider and model it
+ * would use. A provider that cannot be resolved yields an unknown window
+ * instead of failing; an invalid --context-window is reported as an error.
+ */
+function buildNextTokenBudget({ currentStepNum, totalSteps, resolvedPrompt, targetFiles, options }) {
+  const { resolveProviderConfig, buildRunSystemPrompt } = require('../lib/aiClient');
+  let providerConfig = null;
+  try {
+    providerConfig = resolveProviderConfig({
+      provider: options.provider,
+      baseUrl: options.baseUrl,
+      model: options.model,
+      contextWindow: options.contextWindow
+    });
+  } catch (err) {
+    if (err.code === 'INVALID_CONTEXT_WINDOW') {
+      logger.error(err.message);
+      process.exit(1);
+    }
+  }
+  return buildTokenBudget({
+    prompt: resolvedPrompt,
+    systemPrompt: buildRunSystemPrompt({ stepNum: currentStepNum, totalSteps, targetFiles }),
+    provider: providerConfig ? providerConfig.provider : options.provider || null,
+    model: providerConfig ? providerConfig.model : options.model || null,
+    contextWindow: providerConfig ? providerConfig.contextWindow : null
+  });
+}
+
 async function runNextCommand(options = {}) {
   if (!isInitialized()) {
     logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
@@ -382,7 +413,8 @@ async function runNextCommand(options = {}) {
       recommendedAI,
       targetFiles,
       warnings,
-      prompt: resolvedPrompt
+      prompt: resolvedPrompt,
+      tokenBudget: buildNextTokenBudget({ currentStepNum, totalSteps, resolvedPrompt, targetFiles, options })
     };
     console.log(JSON.stringify(output, null, 2));
     return;
