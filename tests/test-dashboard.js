@@ -11,8 +11,10 @@ const {
   buildPhaseTree,
   buildDecisionRows,
   isAllowedHost,
-  startDashboardServer
+  startDashboardServer,
+  openBrowser
 } = require('../lib/dashboard');
+const { EventEmitter } = require('events');
 
 function createProject() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-dashboard-'));
@@ -238,10 +240,47 @@ async function testExportEndpoint() {
   }
 }
 
+async function testOpenBrowser() {
+  console.log('\n▶ Test: Browser opener');
+
+  const fakeSpawn = (event) => {
+    const calls = [];
+    const impl = (command, args) => {
+      calls.push([command, args]);
+      const child = new EventEmitter();
+      child.unref = () => {};
+      process.nextTick(() => child.emit(event, event === 'error' ? new Error('ENOENT') : undefined));
+      return child;
+    };
+    return { calls, impl };
+  };
+
+  const url = 'http://localhost:3721';
+  for (const [platform, command, args] of [
+    ['darwin', 'open', [url]],
+    ['linux', 'xdg-open', [url]],
+    ['win32', 'cmd', ['/c', 'start', '""', url]]
+  ]) {
+    const { calls, impl } = fakeSpawn('spawn');
+    assert.strictEqual(await openBrowser(url, { platform, spawnImpl: impl }), true);
+    assert.deepStrictEqual(calls, [[command, args]], `${platform} uses ${command}`);
+  }
+  console.log('  ✔ Uses open, xdg-open or start depending on the platform.');
+
+  const missing = fakeSpawn('error');
+  assert.strictEqual(await openBrowser(url, { platform: 'linux', spawnImpl: missing.impl }), false);
+  const throwing = () => {
+    throw new Error('spawn failed');
+  };
+  assert.strictEqual(await openBrowser(url, { platform: 'linux', spawnImpl: throwing }), false);
+  console.log('  ✔ A missing or failing opener resolves to false instead of crashing.');
+}
+
 async function runTests() {
   await testDataBuilder();
   await testServerRoutes();
   await testExportEndpoint();
+  await testOpenBrowser();
   console.log('\nAll dashboard tests passed.');
 }
 
