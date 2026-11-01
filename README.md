@@ -247,6 +247,17 @@ Updates:
 
 All user instructions outside the managed `<!-- BUILD-WITH-AI:START -->` block are preserved.
 
+Optionally, configure exported decisions in `.buildwithai/rules.config.json`:
+
+```json
+{
+  "includeKeys": ["decisions.database", "decisions.auth"],
+  "excludeKeys": ["decisions.scratchNotes"]
+}
+```
+
+Both keys are optional; `includeKeys` selects decisions, `excludeKeys` removes them, and exclusions take precedence. Without this file, all decisions are exported.
+
 ### Branch-Scoped Storage
 
 To isolate state across git branches, enable branch scoping:
