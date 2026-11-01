@@ -150,16 +150,8 @@ program
 // saves the raw response to history, and advances the workflow — without
 // the copy/paste round-trip. Default `next` behavior is untouched.
 async function runAutonomousStep({ state, context, totalSteps, currentStepNum, resolvedPrompt, targetFiles, options }) {
-  const {
-    resolveProviderConfig,
-    chatCompletion,
-    parseFileBlocks,
-    parseDecisionsBlock,
-    resolveTargetPath,
-    writeFileBlocks,
-    renderDiff,
-    buildRunSystemPrompt
-  } = require('../lib/aiClient');
+  const { resolveProviderConfig, chatCompletion, renderDiff, buildRunSystemPrompt } = require('../lib/aiClient');
+  const { planStepResponse, applyStepResponse } = require('../lib/stepRunner');
 
   let providerConfig;
   try {
@@ -208,28 +200,20 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
   // 1. File blocks → preview (with --review) → safe write.
   // targetFiles lets the parser accept extension-less declared targets
   // (e.g. Dockerfile) while still rejecting language-tagged fences (#134).
-  const blocks = parseFileBlocks(response, targetFiles);
-  let written = 0;
-  let skipped = 0;
-  if (blocks.length === 0) {
+  const cwd = process.cwd();
+  const plan = planStepResponse(cwd, response, targetFiles);
+  let apply = true;
+  if (plan.blocks.length === 0) {
     logger.warn('The AI response contained no file blocks.');
   } else {
-    const applicable = [];
-    for (const block of blocks) {
-      const absolute = resolveTargetPath(process.cwd(), block.path);
-      if (!absolute) {
-        skipped++;
-        logger.warn(`Skipping unsafe path "${block.path}" (outside the project directory).`);
-        continue;
-      }
-      applicable.push({ block, absolute });
+    for (const unsafePath of plan.unsafe) {
+      logger.warn(`Skipping unsafe path "${unsafePath}" (outside the project directory).`);
     }
 
-    let apply = true;
-    if (options.review && applicable.length > 0) {
+    if (options.review && plan.applicable.length > 0) {
       console.log();
       console.log(pc.bold(pc.cyan('Proposed changes:')));
-      for (const { block, absolute } of applicable) {
+      for (const { block, absolute } of plan.applicable) {
         const oldText = fs.existsSync(absolute) ? fs.readFileSync(absolute, 'utf8') : '';
         console.log();
         console.log(pc.bold(`--- ${block.path}${oldText ? '' : ' (new file)'}`));
@@ -240,52 +224,34 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
         { type: 'confirm', name: 'apply', message: 'Apply these file changes?', default: true }
       ]));
     }
-
-    if (apply) {
-      for (const result of writeFileBlocks(
-        process.cwd(),
-        applicable.map((entry) => entry.block)
-      )) {
-        if (result.written) {
-          written++;
-          logger.success(`${result.created ? 'Created' : 'Updated'} ${result.path}`);
-        }
-      }
-    } else {
+    if (!apply) {
       console.log(pc.dim('File changes discarded.'));
     }
   }
 
-  // 2. Decisions → context.
-  const recorded = [];
-  try {
-    const decisions = parseDecisionsBlock(response);
-    for (const [key, value] of Object.entries(decisions)) {
-      if (typeof key === 'string' && key.trim() && setByPath(context, key, value)) {
-        recorded.push(key);
-      }
-    }
-    if (recorded.length > 0) {
-      saveContext(context);
-    }
-  } catch (err) {
-    logger.warn(err.message);
+  // 2. Decisions → context, 3. history + advance, like `done` does.
+  const result = applyStepResponse({
+    cwd,
+    state,
+    context,
+    stepNum: currentStepNum,
+    response,
+    plan,
+    writeFiles: apply
+  });
+  for (const file of result.files) {
+    logger.success(`${file.created ? 'Created' : 'Updated'} ${file.path}`);
   }
-
-  // 3. History + advance, like `done` does.
-  saveHistory(currentStepNum, response);
-  if (!state.completedSteps.includes(currentStepNum)) {
-    state.completedSteps.push(currentStepNum);
+  if (plan.decisionsError) {
+    logger.warn(plan.decisionsError);
   }
-  state.currentStep = currentStepNum + 1;
-  saveState(state);
 
   console.log();
   logger.success(
-    `Step ${currentStepNum} complete: ${written} file(s) written` +
-      (skipped > 0 ? `, ${skipped} skipped` : '') +
-      (recorded.length > 0 ? `, ${recorded.length} decision(s) recorded` : '') +
-      `. Advanced to step ${state.currentStep}/${totalSteps}.`
+    `Step ${currentStepNum} complete: ${result.files.length} file(s) written` +
+      (plan.unsafe.length > 0 ? `, ${plan.unsafe.length} skipped` : '') +
+      (result.recorded.length > 0 ? `, ${result.recorded.length} decision(s) recorded` : '') +
+      `. Advanced to step ${result.nextStep}/${totalSteps}.`
   );
 }
 
