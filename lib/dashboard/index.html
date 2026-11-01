@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="dashboard-token" content="__DASHBOARD_TOKEN__" />
     <title>build-with-ai dashboard</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
@@ -37,6 +38,18 @@
           <div class="progress-fill" id="progress-fill"></div>
         </div>
         <dl class="stats" id="progress-stats"></dl>
+      </section>
+
+      <section class="card" aria-labelledby="export-heading">
+        <h2 id="export-heading">Export</h2>
+        <p class="muted small">
+          Writes files into the project directory, the same as running the export commands in your terminal.
+        </p>
+        <div class="toolbar">
+          <button type="button" class="button button-primary" data-export="docs">Export documentation</button>
+          <button type="button" class="button" data-export="rules">Sync editor rules</button>
+        </div>
+        <div id="export-result" class="export-result" role="status" aria-live="polite"></div>
       </section>
 
       <section class="card" aria-labelledby="phases-heading">

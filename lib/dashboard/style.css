@@ -475,3 +475,46 @@ summary:focus-visible {
   border-left: 3px solid var(--border);
   color: var(--muted);
 }
+
+/* Export */
+.button-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  .button-primary {
+    color: #0f1216;
+  }
+}
+
+.export-result:empty {
+  display: none;
+}
+
+.export-result {
+  font-size: 0.9rem;
+  padding: 10px 12px;
+  border-radius: 8px;
+}
+
+.export-result ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.export-result code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+
+.export-success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.export-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
