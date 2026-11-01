@@ -2532,7 +2532,15 @@ async function runTests() {
 
   // Key resolution order: --api-key flag > env var > .buildwithai/.env
   const savedEnv = {};
-  for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY', 'BUILD_WITH_AI_PROVIDER']) {
+  for (const key of [
+    'OPENAI_API_KEY',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_MODEL',
+    'GEMINI_API_KEY',
+    'GEMINI_MODEL',
+    'DEEPSEEK_API_KEY',
+    'BUILD_WITH_AI_PROVIDER'
+  ]) {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
@@ -2557,7 +2565,12 @@ async function runTests() {
 
     const fromEnv = resolveProviderConfig({ provider: 'anthropic' });
     assert.strictEqual(fromEnv.apiKey, 'env-key', 'Env var must be picked up');
-    assert.strictEqual(fromEnv.model, 'claude-haiku-4-6');
+    assert.strictEqual(fromEnv.model, 'claude-haiku-5-5');
+
+    const geminiDefault = resolveProviderConfig({ provider: 'gemini' });
+    assert.strictEqual(geminiDefault.model, 'gemini-3.8-flash', 'Gemini must default to a supported model');
+    const geminiFromFlag = resolveProviderConfig({ provider: 'gemini', model: 'custom-gemini-model' });
+    assert.strictEqual(geminiFromFlag.model, 'custom-gemini-model', 'Explicit Gemini model must take precedence');
 
     const dotenvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-dotenv-'));
     try {
@@ -2652,7 +2665,7 @@ async function runTests() {
 
   calls.length = 0;
   const anthropicText = await chatCompletion(
-    { kind: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-haiku-4-6', apiKey: 'ak' },
+    { kind: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-haiku-5-5', apiKey: 'ak' },
     messages,
     { fetchImpl: mockFetch({ content: [{ type: 'text', text: 'claude says hi' }] }) }
   );
@@ -2669,7 +2682,7 @@ async function runTests() {
     {
       kind: 'gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       apiKey: 'gk'
     },
     messages,
@@ -2681,7 +2694,7 @@ async function runTests() {
   );
   assert.strictEqual(geminiText, 'gemini says hi');
   assert.ok(calls[0].url.includes(':generateContent'), 'Gemini path');
-  assert.ok(calls[0].url.includes('gemini-2.5-flash'), 'Gemini model in URL');
+  assert.ok(calls[0].url.includes('gemini-3.8-flash'), 'Gemini model in URL');
   assert.strictEqual(calls[0].init.headers['x-goog-api-key'], 'gk');
   const geminiBody = JSON.parse(calls[0].init.body);
   assert.strictEqual(geminiBody.systemInstruction.parts[0].text, 'Be terse.');
