@@ -2403,6 +2403,8 @@ async function runTests() {
     resolveProviderConfig,
     chatCompletion,
     parseFileBlocks,
+    findTruncatedFileBlocks,
+    validateBlockContent,
     parseDecisionsBlock: parseAiDecisions,
     resolveTargetPath,
     writeFileBlocks,
@@ -2672,6 +2674,73 @@ async function runTests() {
   assert.strictEqual(taggedCrlfBlocks[0].content, 'console.log(1);', 'CRLF normalized, no trailing \\r');
   const crlf = '```src/app.js\r\nline1\r\nline2\r\n```';
   assert.strictEqual(parseFileBlocks(crlf)[0].content, 'line1\nline2', 'CRLF line endings normalized to LF');
+
+  // Truncated blocks are dropped, reported, and must not swallow the
+  // block that follows them (#213)
+  const truncatedEof = '```src/partial.js\nconst x = 1;\n';
+  assert.deepStrictEqual(parseFileBlocks(truncatedEof), [], 'truncated block at EOF is never parsed');
+  assert.deepStrictEqual(
+    findTruncatedFileBlocks(truncatedEof).map((b) => b.path),
+    ['src/partial.js'],
+    'truncated block at EOF is reported'
+  );
+  const truncatedThenValid = [
+    '```src/broken.js',
+    'function broken(',
+    '```src/good.js',
+    "console.log('good');",
+    '```'
+  ].join('\n');
+  assert.deepStrictEqual(
+    parseFileBlocks(truncatedThenValid).map((b) => b.path),
+    ['src/good.js'],
+    'a truncated block must not swallow the following block'
+  );
+  assert.deepStrictEqual(
+    findTruncatedFileBlocks(truncatedThenValid).map((b) => b.path),
+    ['src/broken.js'],
+    'truncated block before a valid block is reported'
+  );
+  assert.deepStrictEqual(findTruncatedFileBlocks(sample), [], 'well-formed blocks report nothing truncated');
+  assert.deepStrictEqual(
+    findTruncatedFileBlocks('```javascript\nconsole.log(1);\n'),
+    [],
+    'a truncated explanatory snippet is not a truncated file block'
+  );
+
+  // Syntax validation: JSON, JS and Python (#213)
+  assert.strictEqual(validateBlockContent({ path: 'data.json', content: '{ "a": 1 }' }).valid, true);
+  assert.strictEqual(validateBlockContent({ path: 'data.json', content: '{ bad json' }).valid, false);
+  assert.strictEqual(validateBlockContent({ path: 'src/app.js', content: "console.log('ok');" }).valid, true);
+  assert.strictEqual(
+    validateBlockContent({ path: 'src/app.js', content: 'function broken(' }).valid,
+    false,
+    'unclosed JS function must fail validation'
+  );
+  assert.strictEqual(
+    validateBlockContent({ path: 'src/app.mjs', content: "import fs from 'node:fs';\nfs.existsSync('.');" }).valid,
+    true,
+    'ESM import in .mjs must pass'
+  );
+  assert.strictEqual(
+    validateBlockContent({ path: 'src/app.js', content: "import fs from 'node:fs';\nfs.existsSync('.');" }).valid,
+    true,
+    'ESM import in .js must pass (tried as both module systems)'
+  );
+  const pyBad = validateBlockContent({ path: 'script.py', content: 'def broken(\n  pass\n' });
+  if (pyBad.skipped) {
+    console.log('  (python3 not available — Python validation skipped)');
+  } else {
+    assert.strictEqual(pyBad.valid, false, 'unclosed Python function must fail validation');
+    assert.strictEqual(validateBlockContent({ path: 'script.py', content: 'print("ok")\n' }).valid, true);
+  }
+  assert.strictEqual(
+    validateBlockContent({ path: 'src/app.jsx', content: 'function broken(' }).valid,
+    true,
+    'JSX is not parser-checked (needs a transpiler) and always passes'
+  );
+  console.log('  ✔ Truncated-block detection and syntax validation.');
+
   console.log('  ✔ File-block and decisions parsing.');
 
   // Alternative auth decision keys surface in export and rules (#195)
@@ -2747,6 +2816,25 @@ async function runTests() {
     assert.strictEqual(reserved[3].written, false, 'Reserved workflows block is skipped, never written');
     assert.strictEqual(reserved[4].written, false, 'Reserved .env block is skipped, never written');
     assert.ok(!fs.existsSync(path.join(safeDir, '.git')), 'Reserved .git directory must not be created');
+
+    // Syntactically invalid blocks are never written unless forced (#213)
+    const invalid = writeFileBlocks(safeDir, [
+      { path: 'bad.json', content: '{ bad json' },
+      { path: 'bad.js', content: 'function broken(' },
+      { path: 'good.json', content: '{ "a": 1 }' },
+      { path: 'good.js', content: "console.log('ok');" }
+    ]);
+    assert.strictEqual(invalid[0].written, false, 'malformed JSON must not be written');
+    assert.ok(invalid[0].skipped.includes('invalid syntax'), 'malformed JSON skip reason names the problem');
+    assert.strictEqual(invalid[1].written, false, 'invalid JS must not be written');
+    assert.strictEqual(invalid[2].written, true, 'valid JSON is still written');
+    assert.strictEqual(invalid[3].written, true, 'valid JS is still written');
+    assert.ok(!fs.existsSync(path.join(safeDir, 'bad.json')), 'malformed JSON file must not exist on disk');
+    assert.ok(!fs.existsSync(path.join(safeDir, 'bad.js')), 'invalid JS file must not exist on disk');
+    const forced = writeFileBlocks(safeDir, [{ path: 'bad.js', content: 'function broken(' }], { force: true });
+    assert.strictEqual(forced[0].written, true, '--force writes an invalid block');
+    assert.ok(forced[0].validationError, '--force result still reports the validation error');
+    assert.ok(fs.existsSync(path.join(safeDir, 'bad.js')), 'forced invalid JS file exists on disk');
 
     const diff = renderDiff('line1\nline2\nline3\n', 'line1\nCHANGED\nline3\n', { color: false });
     assert.ok(diff.includes('- line2'), 'Removed line marked');
