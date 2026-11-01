@@ -37,6 +37,7 @@ const { runInit } = require('../lib/init');
 const { runResume } = require('../lib/resume');
 const { runExport } = require('../lib/export');
 const { runRulesExport } = require('../lib/rules');
+const { buildStatusSummary } = require('../lib/status');
 const logger = require('../lib/logger');
 
 const program = new Command();
@@ -514,33 +515,20 @@ function runStatusCommand(options = {}) {
   const context = loadContext();
   const template = getTemplate(state.templateId);
 
-  const totalSteps = template ? template.steps.length : state.totalSteps || 0;
-  const currentStepNum = state.currentStep || 1;
-  const completedList = state.completedSteps || [];
-  const completedCount = countUniqueCompletedSteps(state.completedSteps, totalSteps);
-  const exportReady = totalSteps > 0 && completedCount === totalSteps;
-  const decisions = context.decisions || {};
-
+  const summary = buildStatusSummary(state, context, template);
   if (options.json) {
-    const output = {
-      projectName: state.projectName,
-      templateId: state.templateId,
-      templateTitle: state.templateTitle || state.templateId,
-      experienceLevel: state.experienceLevel,
-      projectIdea: state.projectIdea,
-      startedAt: state.startedAt || null,
-      updatedAt: state.updatedAt || null,
-      currentStep: currentStepNum,
-      totalSteps,
-      completedSteps: completedList,
-      completedCount,
-      progressPercent: totalSteps > 0 ? Math.round((completedCount / totalSteps) * 100) : 0,
-      exportReady,
-      decisions
-    };
-    console.log(JSON.stringify(output, null, 2));
+    console.log(JSON.stringify(summary, null, 2));
     return;
   }
+
+  const {
+    totalSteps,
+    currentStep: currentStepNum,
+    completedSteps: completedList,
+    completedCount,
+    exportReady,
+    decisions
+  } = summary;
 
   console.log();
   console.log(pc.bold(pc.cyan(`PROJECT STATUS: ${state.projectName}`)));
