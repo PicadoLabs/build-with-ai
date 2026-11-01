@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Non-Interactive Project Initialization:** `init` accepts `--yes/-y`, `--name`, `--level`, and `--idea`, enabling zero-prompt setup in CI, Docker, devcontainers, and coding agents. `--yes` fills missing values from documented defaults (`web-app`, current directory name, `Intermediate`, and a generic project idea), and stdin is never read.
+- **Built-in Template Selection via `--template`:** `--template` now accepts a built-in template ID (for example `--template saas-mvp`) alongside local file paths and HTTP(S) URLs.
+- **Headless Re-Initialization Guard:** a non-interactive re-init exits 1 with a `--force` hint instead of overwriting an existing workflow. `--force` replaces state only after the template loads and every value validates.
+
+### Changed
+- **Interactive Prefill:** in a terminal, supplied flags prefill the matching prompts while missing values are still asked.
+- **Workspace Template Cleanup:** re-initializing with a built-in template removes a stale `.buildwithai/template.json`, so later commands cannot resolve a previous custom template.
+
+### Fixed
+- **Fail-Fast on Partial Flags:** when stdin is not a terminal and only some init values are supplied, `init` exits 1 with the missing flag names instead of waiting for input that will never arrive.
+
+---
+
 ## [1.4.0] - 2026-10-29
 
 ### Added
