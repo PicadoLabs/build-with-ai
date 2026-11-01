@@ -2703,6 +2703,92 @@ async function runTests() {
   );
   console.log('  ✔ chatCompletion speaks OpenAI, Anthropic, Gemini and Ollama protocols (mocked).');
 
+  // Token budgets (#215)
+  const {
+    estimateTokens,
+    resolveContextWindow,
+    buildTokenBudget,
+    formatBudgetWarning,
+    WARNING_THRESHOLD
+  } = require('../lib/tokenBudget');
+  assert.strictEqual(estimateTokens(''), 0);
+  assert.strictEqual(estimateTokens(undefined), 0);
+  assert.strictEqual(estimateTokens('abcd'), 1);
+  assert.strictEqual(estimateTokens('abcde'), 2, 'Partial tokens round up');
+  assert.strictEqual(estimateTokens('x'.repeat(4000)), 1000);
+
+  assert.deepStrictEqual(resolveContextWindow({ provider: 'openai', model: 'gpt-4o-mini' }), {
+    tokens: 128000,
+    source: 'model'
+  });
+  assert.strictEqual(resolveContextWindow({ provider: 'openai', model: 'o1-preview' }).tokens, 128000);
+  assert.strictEqual(resolveContextWindow({ provider: 'openai', model: 'o3-mini' }).tokens, 200000);
+  assert.strictEqual(resolveContextWindow({ provider: 'anthropic', model: 'claude-haiku-4-6' }).tokens, 200000);
+  assert.strictEqual(
+    resolveContextWindow({ provider: 'together', model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo' }).tokens,
+    128000,
+    'Namespaced hosted model ids match on their last segment'
+  );
+  assert.deepStrictEqual(resolveContextWindow({ provider: 'openai', model: 'some-future-model' }), {
+    tokens: 128000,
+    source: 'provider-default'
+  });
+  assert.deepStrictEqual(
+    resolveContextWindow({ provider: 'ollama', model: 'llama3.1' }),
+    { tokens: 8192, source: 'provider-default' },
+    'Ollama uses its num_ctx-bound default regardless of the model'
+  );
+  assert.deepStrictEqual(resolveContextWindow({ provider: 'jev', model: 'jev-standard' }), {
+    tokens: null,
+    source: 'unknown'
+  });
+  assert.deepStrictEqual(resolveContextWindow({ provider: 'ollama', model: 'llama3.1', override: 32768 }), {
+    tokens: 32768,
+    source: 'override'
+  });
+  assert.strictEqual(
+    resolveContextWindow({ provider: 'ollama', override: 0 }).source,
+    'provider-default',
+    'Non-positive overrides are ignored'
+  );
+  console.log('  ✔ Token estimates and context window lookup (model, provider default, override, unknown).');
+
+  const budgetFor = (totalChars, extra = {}) =>
+    buildTokenBudget({ prompt: 'x'.repeat(totalChars), provider: 'ollama', model: 'llama3.1', ...extra });
+  const below = budgetFor(4 * Math.floor(8192 * WARNING_THRESHOLD) - 4);
+  assert.strictEqual(below.status, 'ok');
+  assert.strictEqual(formatBudgetWarning(below), null, 'No warning below the threshold');
+  const atThreshold = budgetFor(4 * Math.ceil(8192 * WARNING_THRESHOLD));
+  assert.strictEqual(atThreshold.status, 'warning', 'Warns at 75% of the window');
+  const overflow = budgetFor(4 * 8192);
+  assert.strictEqual(overflow.status, 'overflow');
+  assert.strictEqual(overflow.percentOfContext, 100);
+
+  const split = buildTokenBudget({ prompt: 'x'.repeat(400), systemPrompt: 'y'.repeat(40), provider: 'openai' });
+  assert.strictEqual(split.promptTokens, 100);
+  assert.strictEqual(split.systemTokens, 10);
+  assert.strictEqual(split.totalTokens, 110, 'System prompt counts toward the budget');
+  assert.strictEqual(split.model, null);
+  const unknown = buildTokenBudget({ prompt: 'x'.repeat(10 ** 6), provider: 'jev' });
+  assert.strictEqual(unknown.status, 'unknown');
+  assert.strictEqual(unknown.percentOfContext, null);
+  assert.strictEqual(formatBudgetWarning(unknown), null, 'Unknown windows never warn');
+
+  const warningText = formatBudgetWarning(atThreshold, { envPrefix: 'OLLAMA' });
+  assert.match(warningText, /close to the context window/);
+  assert.match(warningText, /8,192-token context window of llama3\.1/);
+  assert.match(warningText, /num_ctx/, 'Ollama warnings explain num_ctx');
+  assert.match(warningText, /OLLAMA_CONTEXT_WINDOW/);
+  const overflowText = formatBudgetWarning(budgetFor(4 * 9000, { contextWindow: 8192 }));
+  assert.match(overflowText, /likely exceeds the context window/);
+  assert.doesNotMatch(overflowText, /--context-window/, 'No override hint when the window was overridden');
+  assert.doesNotMatch(
+    formatBudgetWarning(buildTokenBudget({ prompt: 'x'.repeat(4 * 120000), provider: 'openai', model: 'gpt-4o' })),
+    /num_ctx/,
+    'The num_ctx hint is Ollama-only'
+  );
+  console.log('  ✔ Token budgets flag prompts at 75% and 100% of the window with actionable warnings.');
+
   // Parsing: file blocks + decisions
   const sample = [
     'Here you go.',
