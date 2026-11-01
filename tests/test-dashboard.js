@@ -179,9 +179,69 @@ async function testServerRoutes() {
   }
 }
 
+async function testExportEndpoint() {
+  console.log('\n▶ Test: Dashboard export endpoint');
+
+  const { dir } = createProject();
+  const calls = [];
+  const exporters = {
+    docs: async (cwd) => {
+      calls.push('docs');
+      return [path.join(cwd, 'README.md'), path.join(cwd, 'BUILD_LOG.md')];
+    },
+    rules: async () => {
+      calls.push('rules');
+      return false;
+    }
+  };
+  const { server, url } = await startDashboardServer({ cwd: dir, port: 0, exporters });
+  const token = server.dashboardToken;
+  const post = (body, headers = {}) =>
+    request(`${url}/api/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Dashboard-Token': token, ...headers },
+      body: JSON.stringify(body)
+    });
+
+  try {
+    const page = await request(`${url}/`);
+    assert.ok(page.body.includes(`content="${token}"`), 'Page embeds the export token');
+    assert.ok(!page.body.includes('__DASHBOARD_TOKEN__'), 'Token placeholder is replaced');
+    assert.match(token, /^[a-f0-9]{64}$/);
+    console.log('  ✔ The served page embeds a random per-server token.');
+
+    assert.strictEqual((await post({ target: 'docs' }, { 'X-Dashboard-Token': '' })).status, 403);
+    assert.strictEqual((await post({ target: 'docs' }, { 'X-Dashboard-Token': 'a'.repeat(64) })).status, 403);
+    assert.strictEqual((await post({ target: 'docs' }, { Origin: 'http://evil.example' })).status, 403);
+    assert.strictEqual((await post({ target: 'docs' }, { 'Content-Type': 'text/plain' })).status, 415);
+    assert.deepStrictEqual(calls, [], 'Rejected requests never run an export');
+    console.log('  ✔ Missing tokens, wrong tokens, foreign origins and non-JSON bodies are rejected.');
+
+    assert.strictEqual((await post({ target: 'everything' })).status, 400);
+    assert.strictEqual((await post('x'.repeat(2048))).status, 413);
+    assert.strictEqual((await request(`${url}/api/export`)).status, 405);
+    console.log('  ✔ Unknown targets, oversized bodies and GET requests are rejected.');
+
+    const docs = await post({ target: 'docs' }, { Origin: url });
+    assert.strictEqual(docs.status, 200);
+    assert.deepStrictEqual(JSON.parse(docs.body), { target: 'docs', files: ['README.md', 'BUILD_LOG.md'] });
+    console.log('  ✔ A valid request runs the export and returns project-relative paths.');
+
+    const rules = await post({ target: 'rules' });
+    assert.strictEqual(rules.status, 500, 'A failed export reports an error');
+    assert.ok(JSON.parse(rules.body).error.includes('terminal'));
+    assert.deepStrictEqual(calls, ['docs', 'rules']);
+    console.log('  ✔ A failed export returns a 500 with a pointer to the terminal output.');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function runTests() {
   await testDataBuilder();
   await testServerRoutes();
+  await testExportEndpoint();
   console.log('\nAll dashboard tests passed.');
 }
 
