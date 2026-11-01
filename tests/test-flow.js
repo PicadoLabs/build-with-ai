@@ -2596,6 +2596,54 @@ async function runTests() {
   }
   console.log('  ✔ Provider config resolves with flag > env > .env precedence.');
 
+  // Context window override precedence (#215): flag > env > .buildwithai/.env
+  const savedWindowEnv = process.env.OLLAMA_CONTEXT_WINDOW;
+  delete process.env.OLLAMA_CONTEXT_WINDOW;
+  const windowDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-context-window-'));
+  try {
+    assert.strictEqual(resolveProviderConfig({ provider: 'ollama', cwd: windowDir }).contextWindow, null);
+
+    fs.mkdirSync(path.join(windowDir, '.buildwithai'), { recursive: true });
+    fs.writeFileSync(path.join(windowDir, '.buildwithai', '.env'), 'OLLAMA_CONTEXT_WINDOW=16384\n');
+    assert.strictEqual(resolveProviderConfig({ provider: 'ollama', cwd: windowDir }).contextWindow, 16384);
+
+    process.env.OLLAMA_CONTEXT_WINDOW = '32768';
+    assert.strictEqual(
+      resolveProviderConfig({ provider: 'ollama', cwd: windowDir }).contextWindow,
+      32768,
+      'Env var must beat .env'
+    );
+    assert.strictEqual(
+      resolveProviderConfig({ provider: 'ollama', cwd: windowDir, contextWindow: '65536' }).contextWindow,
+      65536,
+      'Flag must beat env var'
+    );
+    assert.strictEqual(
+      resolveProviderConfig({ provider: 'openai', cwd: windowDir }).contextWindow,
+      null,
+      'Overrides are scoped to their provider prefix'
+    );
+
+    for (const bad of ['0', '-5', '8k', '1.5', 'abc']) {
+      assert.throws(
+        () => resolveProviderConfig({ provider: 'ollama', cwd: windowDir, contextWindow: bad }),
+        /Invalid context window .* from --context-window/,
+        `Rejects --context-window ${bad}`
+      );
+    }
+    process.env.OLLAMA_CONTEXT_WINDOW = 'lots';
+    assert.throws(
+      () => resolveProviderConfig({ provider: 'ollama', cwd: windowDir }),
+      /from OLLAMA_CONTEXT_WINDOW/,
+      'Invalid env values name the variable'
+    );
+  } finally {
+    if (savedWindowEnv === undefined) delete process.env.OLLAMA_CONTEXT_WINDOW;
+    else process.env.OLLAMA_CONTEXT_WINDOW = savedWindowEnv;
+    fs.rmSync(windowDir, { recursive: true, force: true });
+  }
+  console.log('  ✔ Context window overrides resolve with flag > env > .env precedence and reject bad values.');
+
   // chatCompletion: mocked network for every protocol (no real calls)
   const calls = [];
   const mockFetch =
