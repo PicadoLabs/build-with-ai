@@ -2,10 +2,17 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const http = require('http');
 
 const { initState, loadState, saveState, saveContext, saveHistory } = require('../lib/state');
 const { getTemplate } = require('../lib/promptEngine');
-const { buildDashboardData, buildPhaseTree, buildDecisionRows } = require('../lib/dashboard');
+const {
+  buildDashboardData,
+  buildPhaseTree,
+  buildDecisionRows,
+  isAllowedHost,
+  startDashboardServer
+} = require('../lib/dashboard');
 
 function createProject() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-dashboard-'));
@@ -104,8 +111,77 @@ async function testDataBuilder() {
   console.log('  ✔ Missing templates are handled gracefully.');
 }
 
+function request(url, { method = 'GET', headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(url, { method, headers }, (res) => {
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
+    });
+    req.on('error', reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
+async function testServerRoutes() {
+  console.log('\n▶ Test: Dashboard server routes');
+
+  assert.strictEqual(isAllowedHost('localhost:3721'), true);
+  assert.strictEqual(isAllowedHost('127.0.0.1:3721'), true);
+  assert.strictEqual(isAllowedHost('evil.example:3721'), false);
+  assert.strictEqual(isAllowedHost('localhost.evil.example'), false);
+  assert.strictEqual(isAllowedHost(undefined), false);
+  console.log('  ✔ Host allowlist accepts only local hostnames.');
+
+  const { dir } = createProject();
+  const { server, url } = await startDashboardServer({ cwd: dir, port: 0 });
+  try {
+    const page = await request(`${url}/`);
+    assert.strictEqual(page.status, 200);
+    assert.ok(page.headers['content-type'].startsWith('text/html'));
+    assert.ok(page.headers['content-security-policy'].includes("default-src 'self'"));
+    console.log('  ✔ GET / serves the dashboard page with a content security policy.');
+
+    const api = await request(`${url}/api/project`);
+    assert.strictEqual(api.status, 200);
+    assert.strictEqual(api.headers['cache-control'], 'no-store');
+    assert.strictEqual(JSON.parse(api.body).status.projectName, 'Dashboard Demo');
+    console.log('  ✔ GET /api/project returns project data.');
+
+    const rebinding = await request(`${url}/api/project`, { headers: { Host: 'attacker.example' } });
+    assert.strictEqual(rebinding.status, 403, 'Foreign Host header is rejected');
+    console.log('  ✔ Requests with a foreign Host header are rejected.');
+
+    assert.strictEqual((await request(`${url}/missing`)).status, 404);
+    assert.strictEqual((await request(`${url}/../package.json`)).status, 404);
+    assert.strictEqual((await request(`${url}/api/project`, { method: 'DELETE' })).status, 405);
+    console.log('  ✔ Unknown paths return 404 and unsupported methods return 405.');
+
+    fs.rmSync(path.join(dir, '.buildwithai'), { recursive: true, force: true });
+    const missing = await request(`${url}/api/project`);
+    assert.strictEqual(missing.status, 404, 'Removed project returns 404');
+    assert.ok(JSON.parse(missing.body).error.includes('init'));
+    console.log('  ✔ A missing project returns a helpful 404.');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  const { server: blocker } = await startDashboardServer({ cwd: os.tmpdir(), port: 0 });
+  try {
+    const busyPort = blocker.address().port;
+    await assert.rejects(startDashboardServer({ port: busyPort }), /already in use.*--port/);
+    console.log('  ✔ A busy port fails with a --port hint.');
+  } finally {
+    await new Promise((resolve) => blocker.close(resolve));
+  }
+}
+
 async function runTests() {
   await testDataBuilder();
+  await testServerRoutes();
   console.log('\nAll dashboard tests passed.');
 }
 
