@@ -38,6 +38,7 @@ const { runResume } = require('../lib/resume');
 const { runExport } = require('../lib/export');
 const { runRulesExport } = require('../lib/rules');
 const { buildStatusSummary } = require('../lib/status');
+const { DEFAULT_PORT, startDashboardServer, openBrowser } = require('../lib/dashboard');
 const logger = require('../lib/logger');
 
 const program = new Command();
@@ -580,6 +581,47 @@ function runStatusCommand(options = {}) {
 
   console.log(pc.dim('Tip: Use `npx build-with-ai set <key> <value>` to update any recorded decision.'));
   console.log();
+}
+
+async function runUiCommand(options = {}) {
+  if (!isInitialized()) {
+    logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
+    process.exit(1);
+  }
+
+  const port = Number(options.port);
+  if (!/^\d+$/.test(String(options.port)) || port > 65535) {
+    logger.error('Invalid port. Use a whole number between 0 and 65535.');
+    process.exit(1);
+  }
+
+  let server;
+  let url;
+  try {
+    ({ server, url } = await startDashboardServer({ cwd: process.cwd(), port }));
+  } catch (error) {
+    logger.error(error.message);
+    process.exit(1);
+  }
+
+  console.log();
+  logger.success(`Dashboard running at ${pc.bold(pc.cyan(url))}`);
+  console.log(pc.dim('  Serving this project on 127.0.0.1 only. Press Ctrl+C to stop.'));
+  console.log();
+
+  if (options.open && process.stdout.isTTY && !process.env.CI) {
+    if (!(await openBrowser(url))) {
+      logger.warn(`Could not open a browser automatically. Visit ${url} instead.`);
+    }
+  }
+
+  const shutdown = () => {
+    server.close(() => process.exit(0));
+    // Idle keep-alive connections from the browser would otherwise delay exit.
+    server.closeAllConnections?.();
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 async function runExportCommand(options = {}) {
@@ -1284,6 +1326,18 @@ program
       }
       await runInit({ template: chosen.url });
     }
+  });
+
+// ─────────────────────────────────────────────────
+// `ui` command
+// ─────────────────────────────────────────────────
+program
+  .command('ui')
+  .description('Open a local browser dashboard for progress, decisions, history and exports.')
+  .option('-p, --port <number>', 'Port to serve the dashboard on (127.0.0.1 only)', String(DEFAULT_PORT))
+  .option('--no-open', 'Do not open the dashboard in a browser automatically')
+  .action(async (options) => {
+    await runUiCommand(options);
   });
 
 // ─────────────────────────────────────────────────
