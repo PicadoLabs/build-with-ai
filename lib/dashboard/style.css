@@ -366,3 +366,112 @@ summary:focus-visible {
 .decision-value {
   overflow-wrap: anywhere;
 }
+
+/* History viewer */
+.history {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 720px) {
+  .history {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+.history-item {
+  width: 100%;
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.history-item:hover {
+  background: var(--surface-muted);
+}
+
+.history-item[aria-current='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.history-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.history-view {
+  min-width: 0;
+}
+
+.history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.markdown {
+  overflow-wrap: anywhere;
+}
+
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 16px 0 6px;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote {
+  margin: 8px 0;
+}
+
+.markdown code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  background: var(--surface-muted);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.markdown pre {
+  background: var(--surface-muted);
+  padding: 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.markdown pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown blockquote {
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
