@@ -172,6 +172,8 @@ Custom templates are persisted to `.buildwithai/template.json` and work fully of
 | `npx build-with-ai status` | Display progress bar, completed steps, and active decisions. |
 | `npx build-with-ai context [key]` | Inspect recorded decisions or retrieve a specific dot-notation path. |
 | `npx build-with-ai set <key> <value>` | Update a decision in `context.json` directly from the CLI. |
+| `npx build-with-ai validate` | Check project state, template dependencies, and required decisions without changing files. |
+| `npx build-with-ai validate --template <path>` | Validate a local template file, even before project initialization. |
 | `npx build-with-ai config` | Interactive key-picker to browse and edit decisions. |
 | `npx build-with-ai history [step]` | Inspect archived AI responses and step logs. |
 | `npx build-with-ai resume` | Summary dashboard displaying active state and recommended next action. |
