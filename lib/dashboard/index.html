@@ -43,6 +43,31 @@
         <h2 id="phases-heading">Workflow phases</h2>
         <div id="phase-tree" class="phase-tree"></div>
       </section>
+
+      <section class="card" aria-labelledby="decisions-heading">
+        <div class="card-header">
+          <h2 id="decisions-heading">Decisions</h2>
+          <span id="decision-count" class="badge"></span>
+        </div>
+        <div class="toolbar">
+          <label class="visually-hidden" for="decision-search">Search decisions</label>
+          <input id="decision-search" class="input" type="search" placeholder="Search keys and values" />
+          <label class="visually-hidden" for="decision-phase">Filter by phase</label>
+          <select id="decision-phase" class="input"></select>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th scope="col">Key</th>
+                <th scope="col">Value</th>
+                <th scope="col">Source</th>
+              </tr>
+            </thead>
+            <tbody id="decision-rows"></tbody>
+          </table>
+        </div>
+      </section>
     </main>
 
     <script src="/app.js"></script>
