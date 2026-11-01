@@ -42,6 +42,7 @@ const logger = require('../lib/logger');
 const program = new Command();
 
 const { getMappings } = require('../lib/models');
+const { buildTokenBudget, formatBudgetWarning } = require('../lib/tokenBudget');
 
 program
   .command('models')
@@ -167,7 +168,8 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
       provider: options.provider,
       apiKey: options.apiKey,
       baseUrl: options.baseUrl,
-      model: options.model
+      model: options.model,
+      contextWindow: options.contextWindow
     });
   } catch (err) {
     logger.error(err.message);
@@ -193,6 +195,22 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
     totalSteps,
     targetFiles
   });
+
+  // Advisory only (#215): warn before sending a prompt that nears or
+  // exceeds the model's context window, but never block the run.
+  const budgetWarning = formatBudgetWarning(
+    buildTokenBudget({
+      prompt: resolvedPrompt,
+      systemPrompt: system,
+      provider: providerConfig.provider,
+      model: providerConfig.model,
+      contextWindow: providerConfig.contextWindow
+    }),
+    { envPrefix: providerConfig.envPrefix }
+  );
+  if (budgetWarning) {
+    logger.warn(budgetWarning);
+  }
 
   let response;
   try {
@@ -626,6 +644,10 @@ program
   .option('--api-key <key>', 'API key for --run (overrides env vars and .buildwithai/.env)')
   .option('--model <model>', 'Model id override for --run')
   .option('--base-url <url>', 'API base URL override for --run')
+  .option(
+    '--context-window <tokens>',
+    'Model context window in tokens for --run and --json token budgets (overrides the built-in estimate)'
+  )
   .option('--review', 'With --run: show a colored diff of the proposed file changes and confirm before applying')
   .action(async (options) => {
     await runNextCommand(options);
