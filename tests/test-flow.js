@@ -60,7 +60,7 @@ const { parseDecisions } = require('../lib/decisionParser');
 
 const { validateTemplate } = require('../lib/validator');
 
-const { runInit } = require('../lib/init');
+const { runInit, DEFAULT_TEMPLATE_ID, DEFAULT_EXPERIENCE_LEVEL, DEFAULT_PROJECT_IDEA } = require('../lib/init');
 
 const {
   findMissingTargetFiles,
@@ -3086,6 +3086,501 @@ async function runTests() {
     require('inquirer').prompt = originalPrompt;
     process.exitCode = undefined;
     fs.rmSync(successfulInitDir, { recursive: true, force: true });
+  }
+
+  // Milestone 4: non-interactive re-initialization is explicit and opt-in.
+  // `--yes` alone must never destroy existing progress; `--force` must replace
+  // it completely, and `--force` on its own must still run the wizard.
+  console.log('\n▶ Milestone 4: Non-interactive re-init requires --force (D4)');
+  const reinitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-reinit-'));
+  const reinitPriorExitCode = process.exitCode;
+  try {
+    initState(
+      {
+        projectName: 'Original Project',
+        templateId: 'web-app',
+        templateTitle: 'Full-Stack Web Application',
+        experienceLevel: 'Beginner',
+        projectIdea: 'The original idea.',
+        totalSteps: 23
+      },
+      reinitDir
+    );
+    saveHistory(1, '# Original step 1 response', reinitDir);
+    const reinitStatePath = path.join(getStorageDir(reinitDir), 'state.json');
+    const reinitContextPath = path.join(getStorageDir(reinitDir), 'context.json');
+    const reinitStateBefore = fs.readFileSync(reinitStatePath, 'utf8');
+    const reinitContextBefore = fs.readFileSync(reinitContextPath, 'utf8');
+
+    // 1. Without --force: fail, mention --force, change nothing.
+    const reinitOriginalConsoleError = console.error;
+    const reinitErrors = [];
+    console.error = (...args) => reinitErrors.push(args.join(' '));
+    try {
+      process.exitCode = 0;
+      await runInit(
+        {
+          yes: true,
+          nonInteractive: true,
+          template: 'saas-mvp',
+          name: 'Blocked By Guard',
+          level: 'Experienced',
+          idea: 'A replacement idea.'
+        },
+        reinitDir
+      );
+    } finally {
+      console.error = reinitOriginalConsoleError;
+    }
+    assert.strictEqual(process.exitCode, 1, 'Re-init without --force must fail with exit code 1');
+    assert.ok(reinitErrors.join('\n').includes('--force'), 'The guard message must tell the user to pass --force');
+    assert.strictEqual(
+      fs.readFileSync(reinitStatePath, 'utf8'),
+      reinitStateBefore,
+      'state.json must be byte-identical after a blocked re-init'
+    );
+    assert.strictEqual(
+      fs.readFileSync(reinitContextPath, 'utf8'),
+      reinitContextBefore,
+      'context.json must be byte-identical after a blocked re-init'
+    );
+    assert.strictEqual(
+      loadHistory(1, reinitDir),
+      '# Original step 1 response',
+      'History must survive a blocked re-init'
+    );
+    assert.strictEqual(loadState(reinitDir).projectName, 'Original Project');
+    console.log('  ✔ Re-init without --force exits 1 and leaves state, context, and history untouched.');
+
+    // 2. With --force: replace state, context, and history.
+    process.exitCode = 0;
+    await runInit(
+      {
+        yes: true,
+        force: true,
+        nonInteractive: true,
+        template: 'saas-mvp',
+        name: 'Replaced Project',
+        level: 'Experienced',
+        idea: 'A billing engine.'
+      },
+      reinitDir
+    );
+    assert.strictEqual(process.exitCode, 0, 'Forced re-init must succeed');
+    const replacedState = loadState(reinitDir);
+    assert.strictEqual(replacedState.projectName, 'Replaced Project');
+    assert.strictEqual(replacedState.templateId, 'saas-mvp');
+    assert.strictEqual(replacedState.experienceLevel, 'Experienced');
+    assert.strictEqual(replacedState.projectIdea, 'A billing engine.');
+    assert.strictEqual(replacedState.currentStep, 1);
+    assert.deepStrictEqual(replacedState.completedSteps, []);
+    const saasTemplate = loadTemplates().find((template) => template.id === 'saas-mvp');
+    assert.ok(saasTemplate, 'saas-mvp must exist in the built-in templates');
+    assert.strictEqual(replacedState.totalSteps, saasTemplate.stepCount, 'Step count must follow the new template');
+    assert.deepStrictEqual(getAllHistory(reinitDir), [], 'Forced re-init must clear previous history');
+    assert.strictEqual(
+      loadContext(reinitDir).project.name,
+      'Replaced Project',
+      'Context must describe the new project'
+    );
+    console.log('  ✔ Forced re-init replaces state, context, history, and the step count.');
+
+    // 3. --force with a valid custom template persists the new template.
+    const reinitCustomPath = path.join(reinitDir, 'reinit-custom.json');
+    fs.writeFileSync(
+      reinitCustomPath,
+      JSON.stringify({
+        title: 'Re-init custom template',
+        type: 'reinit-custom',
+        steps: [{ id: 'only-step', prompt: 'Ship {{project.name}}.' }]
+      })
+    );
+    process.exitCode = 0;
+    await runInit(
+      {
+        yes: true,
+        force: true,
+        nonInteractive: true,
+        template: reinitCustomPath,
+        name: 'Custom Project'
+      },
+      reinitDir
+    );
+    assert.strictEqual(process.exitCode, 0, 'Forced re-init with a custom template must succeed');
+    const persistedTemplatePath = path.join(getStorageDir(reinitDir), 'template.json');
+    assert.ok(fs.existsSync(persistedTemplatePath), 'A custom template must be persisted to template.json');
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(persistedTemplatePath, 'utf8')).title,
+      'Re-init custom template',
+      'The persisted template must be the one supplied to the re-init'
+    );
+    const customReinitState = loadState(reinitDir);
+    assert.strictEqual(
+      customReinitState.templateId,
+      'reinit-custom',
+      'Custom template ids come from the file basename'
+    );
+    assert.strictEqual(customReinitState.totalSteps, 1);
+    console.log('  ✔ Forced re-init with a custom template persists the new template.json.');
+
+    // 4. Re-initializing back to a built-in must not leave the custom copy behind.
+    process.exitCode = 0;
+    await runInit(
+      {
+        yes: true,
+        force: true,
+        nonInteractive: true,
+        template: 'web-app',
+        name: 'Back To Builtin'
+      },
+      reinitDir
+    );
+    assert.strictEqual(process.exitCode, 0, 'Forced re-init back to a built-in template must succeed');
+    assert.strictEqual(
+      fs.existsSync(persistedTemplatePath),
+      false,
+      'A built-in re-init must delete the stale .buildwithai/template.json'
+    );
+    assert.strictEqual(loadState(reinitDir).templateId, 'web-app');
+    console.log('  ✔ A built-in re-init removes the stale custom template copy.');
+
+    // 4b. The same invariant at the writer itself: initState is the only place
+    // template.json is managed, so it must not leave a copy that contradicts
+    // state.json even when a caller re-initializes in place (no resetProject).
+    const templateInvariantDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-template-invariant-'));
+    try {
+      initState(
+        {
+          projectName: 'Legacy Custom',
+          templateId: 'legacy-custom',
+          templateTitle: 'Legacy Custom',
+          experienceLevel: 'Beginner',
+          projectIdea: 'Legacy idea.',
+          totalSteps: 1,
+          customTemplate: {
+            id: 'legacy-custom',
+            type: 'legacy-custom',
+            title: 'Legacy Custom',
+            stepCount: 1,
+            steps: [{ id: 'legacy-step', prompt: 'Do the legacy thing.' }]
+          }
+        },
+        templateInvariantDir
+      );
+      const invariantTemplatePath = path.join(getStorageDir(templateInvariantDir), 'template.json');
+      assert.ok(fs.existsSync(invariantTemplatePath), 'initState persists a custom template');
+
+      initState(
+        {
+          projectName: 'Builtin Again',
+          templateId: 'web-app',
+          templateTitle: 'Full-Stack Web Application',
+          experienceLevel: 'Intermediate',
+          projectIdea: 'Built-in idea.',
+          totalSteps: 23
+        },
+        templateInvariantDir
+      );
+      assert.strictEqual(
+        fs.existsSync(invariantTemplatePath),
+        false,
+        'initState must remove a stale template.json when no custom template is supplied'
+      );
+      assert.strictEqual(loadState(templateInvariantDir).templateId, 'web-app');
+      console.log('  ✔ initState drops a stale template.json when re-initializing in place.');
+    } finally {
+      fs.rmSync(templateInvariantDir, { recursive: true, force: true });
+    }
+
+    // 5. --force alone is not non-interactive: the wizard still runs.
+    const reinitOriginalPrompt = require('inquirer').prompt;
+    let reinitPromptCalls = 0;
+    require('inquirer').prompt = async () => {
+      reinitPromptCalls += 1;
+      return {
+        templateId: 'web-app',
+        experienceLevel: 'Intermediate',
+        projectName: 'Prompted Again',
+        projectIdea: 'Prompted idea.'
+      };
+    };
+    try {
+      process.exitCode = 0;
+      await runInit({ force: true }, reinitDir);
+    } finally {
+      require('inquirer').prompt = reinitOriginalPrompt;
+    }
+    assert.strictEqual(process.exitCode, 0, 'Interactive re-init with --force must succeed');
+    assert.strictEqual(reinitPromptCalls, 1, '--force alone must still run the interactive wizard');
+    assert.strictEqual(loadState(reinitDir).projectName, 'Prompted Again');
+    console.log('  ✔ --force alone still runs the wizard; it does not imply non-interactive.');
+  } finally {
+    process.exitCode = reinitPriorExitCode;
+    fs.rmSync(reinitDir, { recursive: true, force: true });
+  }
+
+  // The same contract through the real CLI, with stdin closed so any prompt
+  // would hang or exit 130 instead of quietly succeeding.
+  console.log('\n▶ Milestone 4: CLI re-init exit codes with a closed stdin');
+  const cliReinitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-cli-reinit-'));
+  try {
+    const cliReinitBin = path.join(__dirname, '..', 'bin', 'cli.js');
+    const runCliInit = (args) =>
+      require('child_process').spawnSync(process.execPath, [cliReinitBin, 'init', ...args], {
+        cwd: cliReinitDir,
+        encoding: 'utf8',
+        timeout: 60000,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+
+    const cliFirst = runCliInit(['-y', '--template', 'web-app', '--name', 'Cli Reinit']);
+    assert.strictEqual(cliFirst.status, 0, `Headless init must exit 0. stderr: ${cliFirst.stderr}`);
+    assert.strictEqual(isInitialized(cliReinitDir), true);
+
+    const cliBlocked = runCliInit(['-y', '--template', 'web-app', '--name', 'Cli Blocked']);
+    const cliBlockedOutput = `${cliBlocked.stdout}${cliBlocked.stderr}`;
+    assert.strictEqual(cliBlocked.status, 1, 'CLI re-init without --force must exit 1');
+    assert.ok(cliBlockedOutput.includes('--force'), 'The CLI must explain that --force is required');
+    assert.strictEqual(loadState(cliReinitDir).projectName, 'Cli Reinit', 'The CLI must preserve the original project');
+
+    const cliForced = runCliInit(['-y', '--force', '--template', 'saas-mvp', '--name', 'Cli Forced']);
+    assert.strictEqual(cliForced.status, 0, `Forced CLI re-init must exit 0. stderr: ${cliForced.stderr}`);
+    const cliForcedState = loadState(cliReinitDir);
+    assert.strictEqual(cliForcedState.projectName, 'Cli Forced');
+    assert.strictEqual(cliForcedState.templateId, 'saas-mvp');
+    console.log('  ✔ CLI exits 1 without --force and 0 with it, without ever reading stdin.');
+  } finally {
+    fs.rmSync(cliReinitDir, { recursive: true, force: true });
+  }
+
+  // Milestone 5: the non-interactive contract through the real CLI. Every spawn
+  // closes stdin, so a leaked prompt would hang or exit 130 instead of passing.
+  console.log('\n▶ Milestone 5: Non-interactive init CLI integration');
+  const { spawn } = require('child_process');
+  const initCliBin = path.join(__dirname, '..', 'bin', 'cli.js');
+  const initCliEnv = { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' };
+  const runInitCli = (dir, args) =>
+    spawnSync(process.execPath, [initCliBin, 'init', ...args], {
+      cwd: dir,
+      env: initCliEnv,
+      encoding: 'utf8',
+      timeout: 60000,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+  const runInitCliAsync = (dir, args) =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, [initCliBin, 'init', ...args], {
+        cwd: dir,
+        env: initCliEnv,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+      const timer = setTimeout(() => {
+        child.kill();
+        resolve({ status: null, stdout, stderr, timedOut: true });
+      }, 60000);
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        resolve({ status: code, stdout, stderr, timedOut: false });
+      });
+    });
+  const initCliOutput = (result) => `${result.stdout}${result.stderr}`;
+  const initStateExists = (dir) => fs.existsSync(path.join(getStorageDir(dir), 'state.json'));
+  const withInitTempDir = async (prefix, fn) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    try {
+      await fn(dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  // 5.1 - `-y` alone fills every value from the documented defaults.
+  await withInitTempDir('buildwithai-cli-defaults-', (dir) => {
+    const result = runInitCli(dir, ['-y']);
+    assert.strictEqual(result.status, 0, `-y with no values must succeed. Output: ${initCliOutput(result)}`);
+    const state = loadState(dir);
+    assert.strictEqual(state.projectName, path.basename(dir), 'The default name is the cwd basename');
+    assert.strictEqual(state.templateId, DEFAULT_TEMPLATE_ID, 'The default template id is exported by lib/init');
+    assert.strictEqual(state.experienceLevel, DEFAULT_EXPERIENCE_LEVEL, 'The default level is Intermediate');
+    assert.strictEqual(state.projectIdea, DEFAULT_PROJECT_IDEA, 'The default idea is the documented sentence');
+    assert.strictEqual(
+      fs.existsSync(path.join(getStorageDir(dir), 'template.json')),
+      false,
+      'A built-in default must not persist template.json'
+    );
+    console.log('  ✔ -y alone applies the documented defaults.');
+  });
+
+  // 5.2 - all four flags, no `-y`, with a lower-case level.
+  await withInitTempDir('buildwithai-cli-flags-', (dir) => {
+    const result = runInitCli(dir, [
+      '--template',
+      'saas-mvp',
+      '--name',
+      'Full Flags App',
+      '--level',
+      'beginner',
+      '--idea',
+      'Integration idea.'
+    ]);
+    assert.strictEqual(
+      result.status,
+      0,
+      `Four explicit flags must succeed headlessly. Output: ${initCliOutput(result)}`
+    );
+    const state = loadState(dir);
+    assert.strictEqual(state.projectName, 'Full Flags App');
+    assert.strictEqual(state.templateId, 'saas-mvp');
+    assert.strictEqual(state.experienceLevel, 'Beginner', 'Levels are canonicalized case-insensitively');
+    assert.strictEqual(state.projectIdea, 'Integration idea.');
+    const saasTemplate = loadTemplates().find((template) => template.id === 'saas-mvp');
+    assert.strictEqual(state.totalSteps, saasTemplate.stepCount, 'Step count follows the chosen template');
+    console.log('  ✔ All four flags run headlessly and canonicalize the level.');
+  });
+
+  const assertInitRejected = (dir, result, expectedTexts) => {
+    const output = initCliOutput(result);
+    assert.strictEqual(result.status, 1, `Expected exit 1. Output: ${output}`);
+    for (const text of expectedTexts) {
+      assert.ok(output.includes(text), `Expected "${text}" in output: ${output}`);
+    }
+    assert.strictEqual(initStateExists(dir), false, 'A rejected init must not write state.json');
+  };
+
+  // 5.3 - some flags, no `--yes`, closed stdin: fail fast and name what is missing.
+  await withInitTempDir('buildwithai-cli-partial-', (dir) => {
+    assertInitRejected(dir, runInitCli(dir, ['--template', 'web-app', '--name', 'Partial App']), [
+      'missing required values',
+      '--level',
+      '--idea'
+    ]);
+    console.log('  ✔ Partial flags fail fast and name the missing flags.');
+  });
+
+  // 5.4 - unknown built-in template id.
+  await withInitTempDir('buildwithai-cli-unknown-template-', (dir) => {
+    assertInitRejected(dir, runInitCli(dir, ['-y', '--template', 'not-a-template', '--name', 'Bad App']), [
+      'Unknown template "not-a-template"',
+      'Available templates:',
+      'web-app'
+    ]);
+    console.log('  ✔ An unknown template id lists the available templates.');
+  });
+
+  // 5.5 - invalid experience level.
+  await withInitTempDir('buildwithai-cli-bad-level-', (dir) => {
+    assertInitRejected(
+      dir,
+      runInitCli(dir, ['-y', '--template', 'web-app', '--name', 'Bad App', '--level', 'Expert']),
+      ['Invalid experience level "Expert"', 'Beginner, Intermediate, or Experienced']
+    );
+    console.log('  ✔ An invalid level is rejected instead of silently ignored.');
+  });
+
+  // 5.6 - explicitly blank project name is not defaulted.
+  await withInitTempDir('buildwithai-cli-blank-name-', (dir) => {
+    assertInitRejected(dir, runInitCli(dir, ['-y', '--template', 'web-app', '--name', '   ']), [
+      'Project name cannot be empty'
+    ]);
+    console.log('  ✔ A blank --name is rejected, not replaced by the cwd basename.');
+  });
+
+  // 5.7 - explicitly empty template is not defaulted either.
+  await withInitTempDir('buildwithai-cli-empty-template-', (dir) => {
+    assertInitRejected(dir, runInitCli(dir, ['-y', '--template', '', '--name', 'Bad App']), [
+      'Template value cannot be empty'
+    ]);
+    console.log('  ✔ An empty --template is rejected; --yes only fills missing values.');
+  });
+
+  // 5.8 - local custom template path, classified as a file.
+  await withInitTempDir('buildwithai-cli-custom-', (dir) => {
+    const templateDir = path.join(dir, 'templates');
+    fs.mkdirSync(templateDir, { recursive: true });
+    const customTemplatePath = path.join(templateDir, 'integration-custom.json');
+    fs.writeFileSync(
+      customTemplatePath,
+      JSON.stringify({
+        title: 'Integration Custom',
+        type: 'integration-custom',
+        steps: [{ id: 'only-step', prompt: 'Ship {{project.name}}.' }]
+      })
+    );
+    const result = runInitCli(dir, ['-y', '--template', customTemplatePath, '--name', 'Custom CLI App']);
+    assert.strictEqual(result.status, 0, `A custom template path must succeed. Output: ${initCliOutput(result)}`);
+    const state = loadState(dir);
+    assert.strictEqual(state.templateId, 'integration-custom', 'The id comes from the file basename');
+    assert.strictEqual(state.totalSteps, 1);
+    const persisted = JSON.parse(fs.readFileSync(path.join(getStorageDir(dir), 'template.json'), 'utf8'));
+    assert.strictEqual(persisted.title, 'Integration Custom');
+    console.log('  ✔ A custom template path is loaded and persisted.');
+  });
+
+  // 5.9 - `--rules` still runs after a headless init.
+  await withInitTempDir('buildwithai-cli-rules-', (dir) => {
+    const result = runInitCli(dir, ['-y', '--rules', '--template', 'web-app', '--name', 'Rules App']);
+    assert.strictEqual(result.status, 0, `--rules must run after init. Output: ${initCliOutput(result)}`);
+    assert.ok(fs.existsSync(path.join(dir, '.cursorrules')), '--rules generates .cursorrules');
+    assert.ok(fs.existsSync(path.join(dir, 'CLAUDE.md')), '--rules generates CLAUDE.md');
+    console.log('  ✔ --rules still runs after a non-interactive init.');
+  });
+
+  // 5.10 - a URL is remote even though it also ends in .json and contains slashes.
+  const remoteInitServer = http.createServer((req, res) => {
+    if (req.url === '/remote-integration.json') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          title: 'Remote Integration',
+          steps: [{ id: 'remote-step', prompt: 'Ship {{project.name}} remotely.' }]
+        })
+      );
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => remoteInitServer.listen(0, '127.0.0.1', resolve));
+  try {
+    const remoteUrl = `http://127.0.0.1:${remoteInitServer.address().port}/remote-integration.json`;
+    await withInitTempDir('buildwithai-cli-remote-', async (dir) => {
+      const result = await runInitCliAsync(dir, ['-y', '--template', remoteUrl, '--name', 'Remote CLI App']);
+      assert.strictEqual(
+        result.status,
+        0,
+        `A remote template must succeed. timedOut=${result.timedOut} Output: ${initCliOutput(result)}`
+      );
+      const state = loadState(dir);
+      assert.strictEqual(state.templateId, 'remote-integration', 'Remote ids come from the URL path');
+      assert.strictEqual(state.templateTitle, 'Remote Integration');
+      assert.ok(
+        fs.existsSync(path.join(getStorageDir(dir), 'template.json')),
+        'A remote template must be persisted for later commands'
+      );
+      console.log('  ✔ A URL is classified as remote before the file heuristics.');
+    });
+
+    await withInitTempDir('buildwithai-cli-remote-missing-', async (dir) => {
+      const missingUrl = `http://127.0.0.1:${remoteInitServer.address().port}/missing-template.json`;
+      const result = await runInitCliAsync(dir, ['-y', '--template', missingUrl, '--name', 'Remote Missing']);
+      assert.strictEqual(result.status, 1, `A failed remote load must exit 1. Output: ${initCliOutput(result)}`);
+      assert.ok(
+        initCliOutput(result).includes('Failed to load remote template'),
+        'A failed fetch must explain the failure'
+      );
+      assert.strictEqual(initStateExists(dir), false, 'A failed remote load must not write state.json');
+      console.log('  ✔ A failed remote download exits 1 and writes nothing.');
+    });
+  } finally {
+    await new Promise((resolve) => remoteInitServer.close(resolve));
   }
 
   // Cleanup temp dir
