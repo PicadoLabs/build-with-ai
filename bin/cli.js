@@ -42,6 +42,7 @@ const logger = require('../lib/logger');
 const program = new Command();
 
 const { getMappings } = require('../lib/models');
+const { buildTokenBudget, formatBudgetWarning } = require('../lib/tokenBudget');
 
 program
   .command('models')
@@ -175,7 +176,8 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
       provider: options.provider,
       apiKey: options.apiKey,
       baseUrl: options.baseUrl,
-      model: options.model
+      model: options.model,
+      contextWindow: options.contextWindow
     });
   } catch (err) {
     logger.error(err.message);
@@ -201,6 +203,22 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
     totalSteps,
     targetFiles
   });
+
+  // Advisory only (#215): warn before sending a prompt that nears or
+  // exceeds the model's context window, but never block the run.
+  const budgetWarning = formatBudgetWarning(
+    buildTokenBudget({
+      prompt: resolvedPrompt,
+      systemPrompt: system,
+      provider: providerConfig.provider,
+      model: providerConfig.model,
+      contextWindow: providerConfig.contextWindow
+    }),
+    { envPrefix: providerConfig.envPrefix }
+  );
+  if (budgetWarning) {
+    logger.warn(budgetWarning);
+  }
 
   let response;
   try {
@@ -320,6 +338,37 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
 // deduplicated status logic).
 // ─────────────────────────────────────────────────
 
+/**
+ * Token budget for `next --json` (#215): what `next --run` would send (the
+ * step prompt plus the run system prompt) against the provider and model it
+ * would use. A provider that cannot be resolved yields an unknown window
+ * instead of failing; an invalid --context-window is reported as an error.
+ */
+function buildNextTokenBudget({ currentStepNum, totalSteps, resolvedPrompt, targetFiles, options }) {
+  const { resolveProviderConfig, buildRunSystemPrompt } = require('../lib/aiClient');
+  let providerConfig = null;
+  try {
+    providerConfig = resolveProviderConfig({
+      provider: options.provider,
+      baseUrl: options.baseUrl,
+      model: options.model,
+      contextWindow: options.contextWindow
+    });
+  } catch (err) {
+    if (err.code === 'INVALID_CONTEXT_WINDOW') {
+      logger.error(err.message);
+      process.exit(1);
+    }
+  }
+  return buildTokenBudget({
+    prompt: resolvedPrompt,
+    systemPrompt: buildRunSystemPrompt({ stepNum: currentStepNum, totalSteps, targetFiles }),
+    provider: providerConfig ? providerConfig.provider : options.provider || null,
+    model: providerConfig ? providerConfig.model : options.model || null,
+    contextWindow: providerConfig ? providerConfig.contextWindow : null
+  });
+}
+
 async function runNextCommand(options = {}) {
   if (!isInitialized()) {
     logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
@@ -387,7 +436,8 @@ async function runNextCommand(options = {}) {
       recommendedAI,
       targetFiles,
       warnings,
-      prompt: resolvedPrompt
+      prompt: resolvedPrompt,
+      tokenBudget: buildNextTokenBudget({ currentStepNum, totalSteps, resolvedPrompt, targetFiles, options })
     };
     console.log(JSON.stringify(output, null, 2));
     return;
@@ -649,6 +699,10 @@ program
   .option('--api-key <key>', 'API key for --run (overrides env vars and .buildwithai/.env)')
   .option('--model <model>', 'Model id override for --run')
   .option('--base-url <url>', 'API base URL override for --run')
+  .option(
+    '--context-window <tokens>',
+    'Model context window in tokens for --run and --json token budgets (overrides the built-in estimate)'
+  )
   .option('--review', 'With --run: show a colored diff of the proposed file changes and confirm before applying')
   .option('--force', 'With --run: write file blocks even when syntax validation fails')
   .action(async (options) => {

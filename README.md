@@ -294,6 +294,20 @@ npx build-with-ai next --run --provider ollama
 
 Supported providers: `openai`, `anthropic`, `gemini`, `deepseek`, `groq`, `together`, `ollama`.
 
+#### Token Budget Warnings
+
+Before sending a step, `next --run` estimates the prompt size (about 4 characters per token, counting the step prompt and the system prompt) and compares it with the model's context window. At 75% of the window it logs an advisory warning, and past 100% it warns that the model may truncate or reject the prompt. The run is never blocked.
+
+```bash
+# See the estimate without running anything (tokenBudget field)
+npx build-with-ai next --json
+
+# Tell build-with-ai the real window when the built-in estimate is wrong
+npx build-with-ai next --run --provider ollama --context-window 32768
+```
+
+Context windows come from a conservative built-in table of known models, with a default per provider. Ollama always assumes 8192 tokens, because its OpenAI-compatible endpoint is limited by the server's `num_ctx` setting rather than the model's full window. Override the window with `--context-window`, the `<PROVIDER>_CONTEXT_WINDOW` environment variable (for example `OLLAMA_CONTEXT_WINDOW=32768`), or the same key in `.buildwithai/.env`. Providers whose hosted models vary (`groq`, `together`, `jev`) report an unknown window and skip the warning unless the model is recognized or overridden.
+
 ### Model Context Protocol (MCP)
 
 Start a native stdio MCP server to let AI coding tools drive the workflow:
