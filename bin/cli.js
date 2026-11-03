@@ -161,6 +161,7 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
     resolveProviderConfig,
     chatCompletion,
     parseFileBlocks,
+    findTruncatedFileBlocks,
     parseDecisionsBlock,
     resolveTargetPath,
     writeFileBlocks,
@@ -218,6 +219,12 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
   const blocks = parseFileBlocks(response, targetFiles);
   let written = 0;
   let skipped = 0;
+  // Blocks without a closing fence are truncated: warn and never write
+  // partial content to disk (#213).
+  for (const truncated of findTruncatedFileBlocks(response, targetFiles)) {
+    skipped++;
+    logger.warn(`Skipping truncated file block "${truncated.path}" (missing closing fence) — not written.`);
+  }
   if (blocks.length === 0) {
     logger.warn('The AI response contained no file blocks.');
   } else {
@@ -251,11 +258,18 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
     if (apply) {
       for (const result of writeFileBlocks(
         process.cwd(),
-        applicable.map((entry) => entry.block)
+        applicable.map((entry) => entry.block),
+        { force: options.force === true }
       )) {
         if (result.written) {
           written++;
           logger.success(`${result.created ? 'Created' : 'Updated'} ${result.path}`);
+          if (result.validationError) {
+            logger.warn(`Wrote ${result.path} despite invalid syntax (--force): ${result.validationError}`);
+          }
+        } else if (result.skipped) {
+          skipped++;
+          logger.warn(`Skipping "${result.path}": ${result.skipped}.`);
         }
       }
     } else {
@@ -636,6 +650,7 @@ program
   .option('--model <model>', 'Model id override for --run')
   .option('--base-url <url>', 'API base URL override for --run')
   .option('--review', 'With --run: show a colored diff of the proposed file changes and confirm before applying')
+  .option('--force', 'With --run: write file blocks even when syntax validation fails')
   .action(async (options) => {
     await runNextCommand(options);
   });
