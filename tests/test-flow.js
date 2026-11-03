@@ -24,7 +24,9 @@ const {
   loadSnapshot,
   listSnapshots,
   deleteSnapshot,
-  undoLastStep
+  undoLastStep,
+  findLatestValidSnapshot,
+  recoverCorruptedFile
 } = require('../lib/state');
 
 const {
@@ -150,9 +152,11 @@ async function runTests() {
     fs.mkdirSync(getStorageDir(invalidStateDir));
     const statePath = path.join(getStorageDir(invalidStateDir), 'state.json');
     const readmePath = path.join(invalidStateDir, 'README.md');
-    fs.writeFileSync(statePath, '{ invalid JSON', 'utf8');
     fs.writeFileSync(readmePath, 'Existing documentation', 'utf8');
     for (const args of [[], ['--dry-run'], ['--out-dir', 'new-output']]) {
+      // Corrupted state is archived by recovery on every run (#211), so
+      // re-corrupt it before each invocation.
+      fs.writeFileSync(statePath, '{ invalid JSON', 'utf8');
       const result = require('child_process').spawnSync(
         process.execPath,
         [path.join(__dirname, '..', 'bin', 'cli.js'), 'export', ...args],
@@ -160,11 +164,21 @@ async function runTests() {
       );
       assert.ifError(result.error);
       assert.strictEqual(result.status, 1, 'Unreadable state must fail export');
-      assert(result.stderr.includes('restore valid JSON from a backup'), 'Keep the recovery guidance');
+      assert(result.stderr.includes('no valid snapshot'), 'Keep the recovery guidance');
+      assert(result.stderr.includes('build-with-ai reset'), 'Point at re-initialization');
       assert(!result.stderr.includes('TypeError'), 'Do not crash after reporting unreadable state');
       assert(!result.stdout.includes('Documentation exported successfully'));
       assert.strictEqual(fs.readFileSync(readmePath, 'utf8'), 'Existing documentation');
-      assert.strictEqual(fs.readFileSync(statePath, 'utf8'), '{ invalid JSON');
+      assert(!fs.existsSync(statePath), 'damaged state must be archived, not left in place');
+      const stateBackups = fs
+        .readdirSync(getStorageDir(invalidStateDir))
+        .filter((file) => file.startsWith('state.json.corrupted.'));
+      assert(stateBackups.length >= 1, 'damaged state must be archived before recovery is attempted');
+      assert.strictEqual(
+        fs.readFileSync(path.join(getStorageDir(invalidStateDir), stateBackups[0]), 'utf8'),
+        '{ invalid JSON',
+        'the archived copy must preserve the damaged bytes'
+      );
       assert(!fs.existsSync(path.join(invalidStateDir, 'new-output')));
       assert(!fs.existsSync(path.join(invalidStateDir, 'BUILD_LOG.md')));
       assert(!fs.existsSync(path.join(getStorageDir(invalidStateDir), 'CONTEXT.md')));
@@ -270,21 +284,27 @@ async function runTests() {
       assert.throws(() => save(circular, atomicDir), /Unable to save/);
       assert.strictEqual(fs.readFileSync(target, 'utf8'), recovered, 'Serialization errors preserve saved data');
 
-      const logger = require('../lib/logger');
-      const originalError = logger.error;
-      const messages = [];
-      try {
-        logger.error = (message) => messages.push(message);
-        originalWrite(target, '{invalid', 'utf8');
-        assert.deepStrictEqual(load(atomicDir), filename === 'state.json' ? null : {});
-        assert(
-          messages[0].includes(target) && messages[0].includes('restore valid JSON'),
-          'Corruption diagnostic identifies the file and recovery action'
-        );
-        assert.strictEqual(fs.readFileSync(target, 'utf8'), '{invalid', 'Reading does not alter corrupted data');
-      } finally {
-        logger.error = originalError;
-      }
+      // With no snapshot to restore from, a corrupted read must fail cleanly
+      // with re-init instructions instead of returning empty data (#211).
+      originalWrite(target, '{invalid', 'utf8');
+      assert.throws(
+        () => load(atomicDir),
+        (error) =>
+          error.code === 'CORRUPTED_STATE_NO_SNAPSHOT' &&
+          error.message.includes(filename) &&
+          error.message.includes('build-with-ai reset'),
+        'Corruption diagnostic identifies the file and recovery action'
+      );
+      assert(!fs.existsSync(target), 'damaged file must be archived, not left in place');
+      const corruptBackups = fs
+        .readdirSync(getStorageDir(atomicDir))
+        .filter((file) => file.startsWith(`${filename}.corrupted.`));
+      assert.strictEqual(corruptBackups.length, 1, 'damaged file must be archived before recovery is attempted');
+      assert.strictEqual(
+        fs.readFileSync(path.join(getStorageDir(atomicDir), corruptBackups[0]), 'utf8'),
+        '{invalid',
+        'the archived copy must preserve the damaged bytes'
+      );
     }
   } finally {
     fs.writeFileSync = originalWrite;
@@ -1363,6 +1383,104 @@ async function runTests() {
     console.log('  ✔ Undo follows snapshot modification time after non-linear navigation.');
   } finally {
     fs.rmSync(redoUndoDir, { recursive: true, force: true });
+  }
+
+  console.log('\n▶ Test: Corrupted state/context recovery from snapshots (#211)');
+  const corruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-corrupt-'));
+  try {
+    initState(
+      {
+        projectName: 'Corrupt Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Intermediate',
+        projectIdea: 'A recovery demo.',
+        totalSteps: 4
+      },
+      corruptDir
+    );
+    const storageDir = path.join(corruptDir, '.buildwithai');
+    saveContext({ project: { name: 'Corrupt Demo' }, decisions: { database: 'SQLite' } }, corruptDir);
+    saveSnapshot(1, corruptDir);
+
+    // Advance past the snapshot, then take a second snapshot and corrupt it.
+    const advancedState = loadState(corruptDir);
+    advancedState.currentStep = 2;
+    advancedState.completedSteps = [1];
+    saveState(advancedState, corruptDir);
+    saveContext({ project: { name: 'Corrupt Demo' }, decisions: { database: 'PostgreSQL' } }, corruptDir);
+    saveSnapshot(2, corruptDir);
+    fs.writeFileSync(path.join(storageDir, 'snapshots', 'step-02.json'), '{ broken', 'utf8');
+
+    // Corrupted context.json restores from the latest VALID snapshot only.
+    fs.writeFileSync(path.join(storageDir, 'context.json'), '{ nope', 'utf8');
+    assert.strictEqual(findLatestValidSnapshot(corruptDir).step, 1, 'corrupt snapshot must be skipped');
+    const recoveredContext = loadContext(corruptDir);
+    assert.strictEqual(recoveredContext.decisions.database, 'SQLite', 'context must roll back to snapshot 1');
+    const contextBackups = fs.readdirSync(storageDir).filter((file) => file.startsWith('context.json.corrupted.'));
+    assert.strictEqual(contextBackups.length, 1, 'exactly one context backup must be created');
+    assert.strictEqual(
+      fs.readFileSync(path.join(storageDir, contextBackups[0]), 'utf8'),
+      '{ nope',
+      'the damaged file must be archived before recovery'
+    );
+    assert.strictEqual(loadState(corruptDir).currentStep, 2, 'healthy state.json must not roll back');
+
+    // Corrupted state.json restores the same way, leaving context untouched.
+    fs.writeFileSync(path.join(storageDir, 'state.json'), '{"projectName": ', 'utf8');
+    const recoveredState = loadState(corruptDir);
+    assert.strictEqual(recoveredState.currentStep, 1, 'state must roll back to snapshot 1');
+    const stateBackups = fs.readdirSync(storageDir).filter((file) => file.startsWith('state.json.corrupted.'));
+    assert.strictEqual(stateBackups.length, 1, 'exactly one state backup must be created');
+    assert.strictEqual(loadContext(corruptDir).decisions.database, 'SQLite', 'healthy context must not roll back');
+
+    // Direct recovery reports the backup path and the snapshot step used.
+    fs.writeFileSync(path.join(storageDir, 'context.json'), '{ again', 'utf8');
+    const direct = recoverCorruptedFile(path.join(storageDir, 'context.json'), corruptDir);
+    assert.strictEqual(direct.snapshotStep, 1, 'recovery must report the snapshot step');
+    assert.ok(direct.backupPath.endsWith('.corrupted.') || direct.backupPath.includes('.corrupted.'));
+    assert.strictEqual(fs.readFileSync(direct.backupPath, 'utf8'), '{ again');
+    console.log('  ✔ Corrupted files are archived first, then restored from the latest valid snapshot.');
+  } finally {
+    fs.rmSync(corruptDir, { recursive: true, force: true });
+  }
+
+  console.log('\n▶ Test: Corrupted state with no snapshots fails cleanly (#211)');
+  const noSnapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-corrupt-none-'));
+  try {
+    initState(
+      {
+        projectName: 'No Snapshot Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Intermediate',
+        projectIdea: 'A no-snapshot demo.',
+        totalSteps: 4
+      },
+      noSnapshotDir
+    );
+    const storageDir = path.join(noSnapshotDir, '.buildwithai');
+    fs.writeFileSync(path.join(storageDir, 'state.json'), '{ broken', 'utf8');
+    assert.throws(
+      () => loadState(noSnapshotDir),
+      (error) =>
+        error.code === 'CORRUPTED_STATE_NO_SNAPSHOT' &&
+        error.message.includes('build-with-ai reset') &&
+        error.message.includes('build-with-ai init'),
+      'corrupted state with no snapshot must fail with re-init instructions'
+    );
+    const stateBackups = fs.readdirSync(storageDir).filter((file) => file.startsWith('state.json.corrupted.'));
+    assert.strictEqual(stateBackups.length, 1, 'damaged file must be archived even when recovery fails');
+    assert.strictEqual(fs.readFileSync(path.join(storageDir, stateBackups[0]), 'utf8'), '{ broken');
+    fs.writeFileSync(path.join(storageDir, 'context.json'), '{ broken', 'utf8');
+    assert.throws(
+      () => loadContext(noSnapshotDir),
+      (error) => error.code === 'CORRUPTED_STATE_NO_SNAPSHOT',
+      'a corrupted context read must fail the same clean way'
+    );
+    console.log('  ✔ Corrupted state with no snapshot fails cleanly with re-init instructions.');
+  } finally {
+    fs.rmSync(noSnapshotDir, { recursive: true, force: true });
   }
 
   console.log('\n▶ Test 9c: Step Cancellation Snapshots & Context Reversion');

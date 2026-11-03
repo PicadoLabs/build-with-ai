@@ -1445,6 +1445,12 @@ program.action(async () => {
 });
 
 program.parseAsync(process.argv).catch((error) => {
-  console.error(error);
+  // Corrupted state with no snapshot to restore from already carries a
+  // complete, actionable message: print it without a stack trace (#211).
+  if (error && error.code === 'CORRUPTED_STATE_NO_SNAPSHOT') {
+    console.error(error.message);
+  } else {
+    console.error(error);
+  }
   process.exitCode = 1;
 });
