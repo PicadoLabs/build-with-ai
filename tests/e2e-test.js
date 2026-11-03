@@ -884,7 +884,8 @@ async function executeFullE2ETest() {
     assert(
       rCorrupt.stderr.includes('Failed to parse') ||
         rCorrupt.stderr.includes('Failed to load project state') ||
-        rCorrupt.stdout.includes('Failed to load project state'),
+        rCorrupt.stdout.includes('Failed to load project state') ||
+        rCorrupt.stderr.includes('is corrupted and no valid snapshot was found'),
       'resume corrupt state'
     );
 
