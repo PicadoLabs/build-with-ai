@@ -140,6 +140,11 @@ async function testServerRoutes() {
   const { dir } = createProject();
   const { server, url } = await startDashboardServer({ cwd: dir, port: 0 });
   try {
+    assert.strictEqual(
+      url,
+      `http://127.0.0.1:${server.address().port}`,
+      'The URL uses the IPv4 literal the server listens on, so it never resolves to ::1'
+    );
     const page = await request(`${url}/`);
     assert.strictEqual(page.status, 200);
     assert.ok(page.headers['content-type'].startsWith('text/html'));
