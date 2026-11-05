@@ -3235,6 +3235,64 @@ async function runTests() {
     assert.deepStrictEqual(discarded.files, [], 'writeFiles=false discards file blocks');
     assert.ok(!fs.existsSync(path.join(runnerDir, 'src', 'other.js')));
     assert.strictEqual(discarded.nextStep, 3, 'A discarded step still advances, like next --run');
+
+    // Upstream write rules now applied by the shared runner (#213, #226)
+    const guardedReply = [
+      '```src/bad.js',
+      'function ( {',
+      '```',
+      '```src/fine.js',
+      'module.exports = 3;',
+      '```',
+      '```decisions',
+      '{ "framework": "Express", "decisions.cache": "Redis" }',
+      '```',
+      '```src/cut.js',
+      'const partial = 1;'
+    ].join('\n');
+    const guardedPlan = planStepResponse(runnerDir, guardedReply, []);
+    assert.deepStrictEqual(guardedPlan.truncated, ['src/cut.js'], 'Unclosed blocks are reported as truncated');
+    assert.ok(
+      !guardedPlan.applicable.some((entry) => entry.block.path === 'src/cut.js'),
+      'Truncated blocks are never applicable'
+    );
+    const guarded = applyStepResponse({
+      cwd: runnerDir,
+      state: loadState(runnerDir),
+      context: loadContext(runnerDir),
+      stepNum: 3,
+      response: guardedReply,
+      plan: guardedPlan
+    });
+    assert.deepStrictEqual(
+      guarded.files.map((file) => file.path),
+      ['src/fine.js']
+    );
+    assert.strictEqual(guarded.invalid.length, 1);
+    assert.strictEqual(guarded.invalid[0].path, 'src/bad.js');
+    assert.match(guarded.invalid[0].reason, /invalid syntax.*--force/);
+    assert.ok(!fs.existsSync(path.join(runnerDir, 'src', 'bad.js')), 'Invalid syntax is not written without force');
+    assert.ok(!fs.existsSync(path.join(runnerDir, 'src', 'cut.js')), 'Truncated blocks are not written');
+    assert.deepStrictEqual(
+      guarded.recorded,
+      ['decisions.framework', 'decisions.cache'],
+      'Decision keys are stored under the decisions namespace'
+    );
+    assert.strictEqual(loadContext(runnerDir).decisions.framework, 'Express');
+
+    const forced = applyStepResponse({
+      cwd: runnerDir,
+      state: loadState(runnerDir),
+      context: loadContext(runnerDir),
+      stepNum: 4,
+      response: guardedReply,
+      plan: planStepResponse(runnerDir, guardedReply, []),
+      force: true
+    });
+    const forcedBad = forced.files.find((file) => file.path === 'src/bad.js');
+    assert.ok(forcedBad, 'force writes blocks that fail the syntax check');
+    assert.ok(forcedBad.validationError, 'Forced writes still report the validation error');
+    assert.deepStrictEqual(forced.invalid, []);
   } finally {
     fs.rmSync(runnerDir, { recursive: true, force: true });
   }
