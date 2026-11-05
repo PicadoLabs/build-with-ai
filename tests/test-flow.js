@@ -3212,7 +3212,7 @@ async function runTests() {
       response: runnerReply,
       plan
     });
-    assert.deepStrictEqual(applied.files, [{ path: 'src/index.js', created: true }]);
+    assert.deepStrictEqual(applied.files, [{ path: 'src/index.js', created: true, validationError: null }]);
     assert.deepStrictEqual(applied.recorded, ['decisions.database'], 'Reserved decision keys are ignored');
     assert.strictEqual(applied.nextStep, 2);
     assert.strictEqual(fs.readFileSync(path.join(runnerDir, 'src', 'index.js'), 'utf8'), 'module.exports = 1;');

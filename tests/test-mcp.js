@@ -248,7 +248,7 @@ async function testSampledStep() {
     assert.strictEqual(summary.completedStep, 1);
     assert.strictEqual(summary.advancedToStep, 2);
     assert.strictEqual(summary.model, 'host-model');
-    assert.deepStrictEqual(summary.filesWritten, [{ path: 'src/sampled.js', created: true }]);
+    assert.deepStrictEqual(summary.filesWritten, [{ path: 'src/sampled.js', created: true, validationError: null }]);
     assert.deepStrictEqual(summary.skippedUnsafePaths, ['../escape.js']);
     assert.deepStrictEqual(summary.recordedDecisions, ['decisions.database']);
     assert.strictEqual(fs.readFileSync(path.join(dir, 'src', 'sampled.js'), 'utf8'), 'export const ok = true;');
