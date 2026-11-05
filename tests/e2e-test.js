@@ -100,6 +100,7 @@ async function executeFullE2ETest() {
   const report = {
     Init: 'FAIL',
     Next: 'FAIL',
+    'Token budget': 'FAIL',
     'Prompt resolution': 'FAIL',
     Clipboard: 'FAIL',
     'Done / Summary': 'FAIL',
@@ -113,6 +114,7 @@ async function executeFullE2ETest() {
     History: 'FAIL',
     'Export dry run': 'Fail',
     Export: 'FAIL',
+    'UI dashboard': 'FAIL',
     Reset: 'FAIL',
     'Error handling': 'FAIL'
   };
@@ -279,6 +281,105 @@ async function executeFullE2ETest() {
     }
     report['Clipboard opt-out'] = 'PASS';
     console.log('   ✔ Prompt formatted, variables resolved, and clipboard copy verified.\n');
+
+    // -------------------------------------------------------------
+    // Step 3b: Token budget in next --json and next --run (#215)
+    // -------------------------------------------------------------
+    console.log('🔹 3b. Testing token budgets in `next --json` and `next --run`...');
+    const budgetEnv = { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', BUILD_WITH_AI_NO_COPY: '1' };
+    for (const key of [
+      'BUILD_WITH_AI_PROVIDER',
+      'OPENAI_MODEL',
+      'OPENAI_CONTEXT_WINDOW',
+      'OLLAMA_MODEL',
+      'OLLAMA_BASE_URL',
+      'OLLAMA_CONTEXT_WINDOW'
+    ]) {
+      delete budgetEnv[key];
+    }
+    const runCli = (args, cwd) =>
+      new Promise((resolve) => {
+        const child = spawn(process.execPath, [CLI_BIN, ...args], { cwd, env: budgetEnv });
+        let output = '';
+        child.stdout.on('data', (chunk) => (output += chunk));
+        child.stderr.on('data', (chunk) => (output += chunk));
+        child.on('close', (code) => resolve({ code, output }));
+      });
+
+    const jsonRes = await runCli(['next', '--json'], testDir);
+    assert.strictEqual(jsonRes.code, 0, jsonRes.output);
+    const jsonStep = JSON.parse(jsonRes.output);
+    const budget = jsonStep.tokenBudget;
+    assert(budget, 'next --json includes tokenBudget');
+    assert.strictEqual(budget.promptTokens, Math.ceil(jsonStep.prompt.length / 4), 'Prompt tokens use ~4 chars/token');
+    assert(budget.systemTokens > 0, 'The --run system prompt is counted');
+    assert.strictEqual(budget.totalTokens, budget.promptTokens + budget.systemTokens);
+    assert.strictEqual(budget.provider, 'openai');
+    assert.strictEqual(budget.model, 'gpt-4o-mini');
+    assert.strictEqual(budget.contextWindow, 128000);
+    assert.strictEqual(budget.status, 'ok');
+
+    const tinyWindow = String(budget.totalTokens - 1);
+    const overflowJson = JSON.parse(
+      (await runCli(['next', '--json', '--provider', 'ollama', '--context-window', tinyWindow], testDir)).output
+    ).tokenBudget;
+    assert.strictEqual(overflowJson.status, 'overflow');
+    assert.strictEqual(overflowJson.contextWindowSource, 'override');
+
+    const invalidRes = await runCli(['next', '--json', '--context-window', '8k'], testDir);
+    assert.notStrictEqual(invalidRes.code, 0, 'Invalid --context-window fails');
+    assert(invalidRes.output.includes('Invalid context window "8k"'), 'Invalid window is explained');
+
+    // next --run against a local OpenAI-compatible stub, in throwaway projects
+    // so the main workflow below is unaffected.
+    const http = require('http');
+    const { initState } = require('../lib/state');
+    const { getTemplate } = require('../lib/promptEngine');
+    const stub = http.createServer((req, res) => {
+      req.resume();
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Nothing to change.' } }] }));
+      });
+    });
+    await new Promise((resolve) => stub.listen(0, '127.0.0.1', resolve));
+    const stubUrl = `http://127.0.0.1:${stub.address().port}/v1`;
+    const runDirs = [];
+    const freshProject = () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-e2e-budget-'));
+      const template = getTemplate('web-app');
+      initState(
+        {
+          projectName: 'Budget Check',
+          templateId: 'web-app',
+          templateTitle: template.title,
+          experienceLevel: 'Beginner',
+          projectIdea: 'Token budget e2e',
+          totalSteps: template.steps.length
+        },
+        dir
+      );
+      runDirs.push(dir);
+      return dir;
+    };
+    try {
+      const runArgs = ['next', '--run', '--provider', 'ollama', '--base-url', stubUrl];
+      const quiet = await runCli(runArgs, freshProject());
+      assert.strictEqual(quiet.code, 0, quiet.output);
+      assert(!quiet.output.includes('context window'), 'Small prompts do not warn');
+
+      const loud = await runCli([...runArgs, '--context-window', '200'], freshProject());
+      assert.strictEqual(loud.code, 0, 'The warning never blocks the run');
+      assert(loud.output.includes('likely exceeds the context window'), 'Overflow warning is logged');
+      assert(loud.output.includes('num_ctx'), 'Ollama warning explains num_ctx');
+      assert(loud.output.includes('Step 1 complete'), 'The run still completes');
+    } finally {
+      await new Promise((resolve) => stub.close(resolve));
+      runDirs.forEach(safeRmDir);
+    }
+
+    report['Token budget'] = 'PASS';
+    console.log('   ✔ next --json reports token budgets and next --run warns near the context window.\n');
 
     // -------------------------------------------------------------
     // Step 4: Done — summary path (Step 1)
@@ -721,6 +822,55 @@ async function executeFullE2ETest() {
     console.log('   ✔ Export generated README.md, BUILD_LOG.md, and CONTEXT.md deterministically.\n');
 
     // -------------------------------------------------------------
+    // Step 11b: UI Dashboard Command
+    // -------------------------------------------------------------
+    console.log('🔹 11b. Testing `build-with-ai ui --no-open --port 0`...');
+    const uiProcess = spawn(process.execPath, [CLI_BIN, 'ui', '--no-open', '--port', '0'], {
+      cwd: testDir,
+      env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    try {
+      const uiUrl = await new Promise((resolve, reject) => {
+        let uiOutput = '';
+        const timer = setTimeout(() => reject(new Error(`ui did not start:\n${uiOutput}`)), 10000);
+        uiProcess.stdout.on('data', (chunk) => {
+          uiOutput += chunk.toString();
+          const match = uiOutput.match(/http:\/\/127\.0\.0\.1:\d+/);
+          if (match) {
+            clearTimeout(timer);
+            resolve(match[0]);
+          }
+        });
+        uiProcess.stderr.on('data', (chunk) => (uiOutput += chunk.toString()));
+        uiProcess.once('exit', (code) => {
+          clearTimeout(timer);
+          reject(new Error(`ui exited early with code ${code}:\n${uiOutput}`));
+        });
+      });
+
+      const pageRes = await fetch(`${uiUrl}/`);
+      assert.strictEqual(pageRes.status, 200, 'Dashboard page is served');
+      assert((await pageRes.text()).includes('build-with-ai'), 'Dashboard page renders');
+
+      const projectRes = await fetch(`${uiUrl}/api/project`);
+      assert.strictEqual(projectRes.status, 200, 'Project API responds');
+      const project = await projectRes.json();
+      assert.strictEqual(project.status.projectName, 'Expense Tracker', 'API reports state.json');
+      assert(project.phases.length > 0, 'API reports the phase tree');
+      assert(project.history.length > 0, 'API reports step history files');
+    } finally {
+      if (uiProcess.exitCode === null && uiProcess.signalCode === null) {
+        const exited = new Promise((resolve) => uiProcess.once('exit', resolve));
+        uiProcess.kill('SIGINT');
+        await exited;
+      }
+    }
+
+    report['UI dashboard'] = 'PASS';
+    console.log('   ✔ ui served the dashboard and project data from state.json, context.json and history.\n');
+
+    // -------------------------------------------------------------
     // Step 12: Reset Command
     // -------------------------------------------------------------
     console.log('🔹 12. Testing `build-with-ai reset`...');
@@ -784,7 +934,8 @@ async function executeFullE2ETest() {
     assert(
       rCorrupt.stderr.includes('Failed to parse') ||
         rCorrupt.stderr.includes('Failed to load project state') ||
-        rCorrupt.stdout.includes('Failed to load project state'),
+        rCorrupt.stdout.includes('Failed to load project state') ||
+        rCorrupt.stderr.includes('is corrupted and no valid snapshot was found'),
       'resume corrupt state'
     );
 

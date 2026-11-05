@@ -16,9 +16,9 @@
     "CONTRIBUTING.md"
   ],
   "scripts": {
-    "test": "node tests/test-flow.js && node tests/test-readme-setup.js && node tests/test-validate.js",
+    "test": "node tests/test-flow.js && node tests/test-readme-setup.js && node tests/test-dashboard.js && node tests/test-validate.js",
     "test:e2e": "node tests/e2e-test.js",
-    "test:all": "node tests/test-flow.js && node tests/test-validate.js && node tests/e2e-test.js",
+    "test:all": "node tests/test-flow.js && node tests/test-dashboard.js && node tests/test-validate.js && node tests/e2e-test.js",
     "lint": "eslint \"{bin,lib,tests,.github/scripts}/**/*.js\"",
     "lint:fix": "eslint \"{bin,lib,tests,.github/scripts}/**/*.js\" --fix",
     "format": "prettier --write \"{bin,lib,tests,.github/scripts}/**/*.js\"",
@@ -62,8 +62,8 @@
   },
   "devDependencies": {
     "eslint": "^8.57.1",
-    "eslint-config-prettier": "^9.1.2",
-    "eslint-plugin-prettier": "^5.5.6",
-    "prettier": "^3.9.9"
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.7",
+    "prettier": "^3.9.10"
   }
 }

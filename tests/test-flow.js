@@ -24,7 +24,9 @@ const {
   loadSnapshot,
   listSnapshots,
   deleteSnapshot,
-  undoLastStep
+  undoLastStep,
+  findLatestValidSnapshot,
+  recoverCorruptedFile
 } = require('../lib/state');
 
 const {
@@ -60,7 +62,7 @@ const { parseDecisions } = require('../lib/decisionParser');
 
 const { validateTemplate } = require('../lib/validator');
 
-const { runInit } = require('../lib/init');
+const { runInit, DEFAULT_TEMPLATE_ID, DEFAULT_EXPERIENCE_LEVEL, DEFAULT_PROJECT_IDEA } = require('../lib/init');
 
 const {
   findMissingTargetFiles,
@@ -150,9 +152,11 @@ async function runTests() {
     fs.mkdirSync(getStorageDir(invalidStateDir));
     const statePath = path.join(getStorageDir(invalidStateDir), 'state.json');
     const readmePath = path.join(invalidStateDir, 'README.md');
-    fs.writeFileSync(statePath, '{ invalid JSON', 'utf8');
     fs.writeFileSync(readmePath, 'Existing documentation', 'utf8');
     for (const args of [[], ['--dry-run'], ['--out-dir', 'new-output']]) {
+      // Corrupted state is archived by recovery on every run (#211), so
+      // re-corrupt it before each invocation.
+      fs.writeFileSync(statePath, '{ invalid JSON', 'utf8');
       const result = require('child_process').spawnSync(
         process.execPath,
         [path.join(__dirname, '..', 'bin', 'cli.js'), 'export', ...args],
@@ -160,11 +164,21 @@ async function runTests() {
       );
       assert.ifError(result.error);
       assert.strictEqual(result.status, 1, 'Unreadable state must fail export');
-      assert(result.stderr.includes('restore valid JSON from a backup'), 'Keep the recovery guidance');
+      assert(result.stderr.includes('no valid snapshot'), 'Keep the recovery guidance');
+      assert(result.stderr.includes('build-with-ai reset'), 'Point at re-initialization');
       assert(!result.stderr.includes('TypeError'), 'Do not crash after reporting unreadable state');
       assert(!result.stdout.includes('Documentation exported successfully'));
       assert.strictEqual(fs.readFileSync(readmePath, 'utf8'), 'Existing documentation');
-      assert.strictEqual(fs.readFileSync(statePath, 'utf8'), '{ invalid JSON');
+      assert(!fs.existsSync(statePath), 'damaged state must be archived, not left in place');
+      const stateBackups = fs
+        .readdirSync(getStorageDir(invalidStateDir))
+        .filter((file) => file.startsWith('state.json.corrupted.'));
+      assert(stateBackups.length >= 1, 'damaged state must be archived before recovery is attempted');
+      assert.strictEqual(
+        fs.readFileSync(path.join(getStorageDir(invalidStateDir), stateBackups[0]), 'utf8'),
+        '{ invalid JSON',
+        'the archived copy must preserve the damaged bytes'
+      );
       assert(!fs.existsSync(path.join(invalidStateDir, 'new-output')));
       assert(!fs.existsSync(path.join(invalidStateDir, 'BUILD_LOG.md')));
       assert(!fs.existsSync(path.join(getStorageDir(invalidStateDir), 'CONTEXT.md')));
@@ -270,21 +284,27 @@ async function runTests() {
       assert.throws(() => save(circular, atomicDir), /Unable to save/);
       assert.strictEqual(fs.readFileSync(target, 'utf8'), recovered, 'Serialization errors preserve saved data');
 
-      const logger = require('../lib/logger');
-      const originalError = logger.error;
-      const messages = [];
-      try {
-        logger.error = (message) => messages.push(message);
-        originalWrite(target, '{invalid', 'utf8');
-        assert.deepStrictEqual(load(atomicDir), filename === 'state.json' ? null : {});
-        assert(
-          messages[0].includes(target) && messages[0].includes('restore valid JSON'),
-          'Corruption diagnostic identifies the file and recovery action'
-        );
-        assert.strictEqual(fs.readFileSync(target, 'utf8'), '{invalid', 'Reading does not alter corrupted data');
-      } finally {
-        logger.error = originalError;
-      }
+      // With no snapshot to restore from, a corrupted read must fail cleanly
+      // with re-init instructions instead of returning empty data (#211).
+      originalWrite(target, '{invalid', 'utf8');
+      assert.throws(
+        () => load(atomicDir),
+        (error) =>
+          error.code === 'CORRUPTED_STATE_NO_SNAPSHOT' &&
+          error.message.includes(filename) &&
+          error.message.includes('build-with-ai reset'),
+        'Corruption diagnostic identifies the file and recovery action'
+      );
+      assert(!fs.existsSync(target), 'damaged file must be archived, not left in place');
+      const corruptBackups = fs
+        .readdirSync(getStorageDir(atomicDir))
+        .filter((file) => file.startsWith(`${filename}.corrupted.`));
+      assert.strictEqual(corruptBackups.length, 1, 'damaged file must be archived before recovery is attempted');
+      assert.strictEqual(
+        fs.readFileSync(path.join(getStorageDir(atomicDir), corruptBackups[0]), 'utf8'),
+        '{invalid',
+        'the archived copy must preserve the damaged bytes'
+      );
     }
   } finally {
     fs.writeFileSync = originalWrite;
@@ -1365,6 +1385,104 @@ async function runTests() {
     fs.rmSync(redoUndoDir, { recursive: true, force: true });
   }
 
+  console.log('\n▶ Test: Corrupted state/context recovery from snapshots (#211)');
+  const corruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-corrupt-'));
+  try {
+    initState(
+      {
+        projectName: 'Corrupt Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Intermediate',
+        projectIdea: 'A recovery demo.',
+        totalSteps: 4
+      },
+      corruptDir
+    );
+    const storageDir = path.join(corruptDir, '.buildwithai');
+    saveContext({ project: { name: 'Corrupt Demo' }, decisions: { database: 'SQLite' } }, corruptDir);
+    saveSnapshot(1, corruptDir);
+
+    // Advance past the snapshot, then take a second snapshot and corrupt it.
+    const advancedState = loadState(corruptDir);
+    advancedState.currentStep = 2;
+    advancedState.completedSteps = [1];
+    saveState(advancedState, corruptDir);
+    saveContext({ project: { name: 'Corrupt Demo' }, decisions: { database: 'PostgreSQL' } }, corruptDir);
+    saveSnapshot(2, corruptDir);
+    fs.writeFileSync(path.join(storageDir, 'snapshots', 'step-02.json'), '{ broken', 'utf8');
+
+    // Corrupted context.json restores from the latest VALID snapshot only.
+    fs.writeFileSync(path.join(storageDir, 'context.json'), '{ nope', 'utf8');
+    assert.strictEqual(findLatestValidSnapshot(corruptDir).step, 1, 'corrupt snapshot must be skipped');
+    const recoveredContext = loadContext(corruptDir);
+    assert.strictEqual(recoveredContext.decisions.database, 'SQLite', 'context must roll back to snapshot 1');
+    const contextBackups = fs.readdirSync(storageDir).filter((file) => file.startsWith('context.json.corrupted.'));
+    assert.strictEqual(contextBackups.length, 1, 'exactly one context backup must be created');
+    assert.strictEqual(
+      fs.readFileSync(path.join(storageDir, contextBackups[0]), 'utf8'),
+      '{ nope',
+      'the damaged file must be archived before recovery'
+    );
+    assert.strictEqual(loadState(corruptDir).currentStep, 2, 'healthy state.json must not roll back');
+
+    // Corrupted state.json restores the same way, leaving context untouched.
+    fs.writeFileSync(path.join(storageDir, 'state.json'), '{"projectName": ', 'utf8');
+    const recoveredState = loadState(corruptDir);
+    assert.strictEqual(recoveredState.currentStep, 1, 'state must roll back to snapshot 1');
+    const stateBackups = fs.readdirSync(storageDir).filter((file) => file.startsWith('state.json.corrupted.'));
+    assert.strictEqual(stateBackups.length, 1, 'exactly one state backup must be created');
+    assert.strictEqual(loadContext(corruptDir).decisions.database, 'SQLite', 'healthy context must not roll back');
+
+    // Direct recovery reports the backup path and the snapshot step used.
+    fs.writeFileSync(path.join(storageDir, 'context.json'), '{ again', 'utf8');
+    const direct = recoverCorruptedFile(path.join(storageDir, 'context.json'), corruptDir);
+    assert.strictEqual(direct.snapshotStep, 1, 'recovery must report the snapshot step');
+    assert.ok(direct.backupPath.endsWith('.corrupted.') || direct.backupPath.includes('.corrupted.'));
+    assert.strictEqual(fs.readFileSync(direct.backupPath, 'utf8'), '{ again');
+    console.log('  ✔ Corrupted files are archived first, then restored from the latest valid snapshot.');
+  } finally {
+    fs.rmSync(corruptDir, { recursive: true, force: true });
+  }
+
+  console.log('\n▶ Test: Corrupted state with no snapshots fails cleanly (#211)');
+  const noSnapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-corrupt-none-'));
+  try {
+    initState(
+      {
+        projectName: 'No Snapshot Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Intermediate',
+        projectIdea: 'A no-snapshot demo.',
+        totalSteps: 4
+      },
+      noSnapshotDir
+    );
+    const storageDir = path.join(noSnapshotDir, '.buildwithai');
+    fs.writeFileSync(path.join(storageDir, 'state.json'), '{ broken', 'utf8');
+    assert.throws(
+      () => loadState(noSnapshotDir),
+      (error) =>
+        error.code === 'CORRUPTED_STATE_NO_SNAPSHOT' &&
+        error.message.includes('build-with-ai reset') &&
+        error.message.includes('build-with-ai init'),
+      'corrupted state with no snapshot must fail with re-init instructions'
+    );
+    const stateBackups = fs.readdirSync(storageDir).filter((file) => file.startsWith('state.json.corrupted.'));
+    assert.strictEqual(stateBackups.length, 1, 'damaged file must be archived even when recovery fails');
+    assert.strictEqual(fs.readFileSync(path.join(storageDir, stateBackups[0]), 'utf8'), '{ broken');
+    fs.writeFileSync(path.join(storageDir, 'context.json'), '{ broken', 'utf8');
+    assert.throws(
+      () => loadContext(noSnapshotDir),
+      (error) => error.code === 'CORRUPTED_STATE_NO_SNAPSHOT',
+      'a corrupted context read must fail the same clean way'
+    );
+    console.log('  ✔ Corrupted state with no snapshot fails cleanly with re-init instructions.');
+  } finally {
+    fs.rmSync(noSnapshotDir, { recursive: true, force: true });
+  }
+
   console.log('\n▶ Test 9c: Step Cancellation Snapshots & Context Reversion');
   const cancelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-cancel-'));
   try {
@@ -1443,7 +1561,16 @@ async function runTests() {
 
   // Test 10: Export Documentation
   console.log('\n▶ Test 10: Export (README.md, BUILD_LOG.md, CONTEXT.md)');
-  await runExport(tempDir);
+  const exportedPaths = await runExport(tempDir);
+  assert.deepStrictEqual(
+    exportedPaths,
+    [
+      path.join(tempDir, 'README.md'),
+      path.join(tempDir, 'BUILD_LOG.md'),
+      path.join(tempDir, '.buildwithai', 'CONTEXT.md')
+    ],
+    'runExport must return the written file paths'
+  );
 
   assert(fs.existsSync(path.join(tempDir, 'README.md')), 'README.md must be generated');
   assert(fs.existsSync(path.join(tempDir, 'BUILD_LOG.md')), 'BUILD_LOG.md must be generated');
@@ -2514,6 +2641,8 @@ async function runTests() {
     resolveProviderConfig,
     chatCompletion,
     parseFileBlocks,
+    findTruncatedFileBlocks,
+    validateBlockContent,
     parseDecisionsBlock: parseAiDecisions,
     resolveTargetPath,
     writeFileBlocks,
@@ -2532,7 +2661,15 @@ async function runTests() {
 
   // Key resolution order: --api-key flag > env var > .buildwithai/.env
   const savedEnv = {};
-  for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY', 'BUILD_WITH_AI_PROVIDER']) {
+  for (const key of [
+    'OPENAI_API_KEY',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_MODEL',
+    'GEMINI_API_KEY',
+    'GEMINI_MODEL',
+    'DEEPSEEK_API_KEY',
+    'BUILD_WITH_AI_PROVIDER'
+  ]) {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
@@ -2557,7 +2694,12 @@ async function runTests() {
 
     const fromEnv = resolveProviderConfig({ provider: 'anthropic' });
     assert.strictEqual(fromEnv.apiKey, 'env-key', 'Env var must be picked up');
-    assert.strictEqual(fromEnv.model, 'claude-haiku-4-6');
+    assert.strictEqual(fromEnv.model, 'claude-haiku-5-5');
+
+    const geminiDefault = resolveProviderConfig({ provider: 'gemini' });
+    assert.strictEqual(geminiDefault.model, 'gemini-3.8-flash', 'Gemini must default to a supported model');
+    const geminiFromFlag = resolveProviderConfig({ provider: 'gemini', model: 'custom-gemini-model' });
+    assert.strictEqual(geminiFromFlag.model, 'custom-gemini-model', 'Explicit Gemini model must take precedence');
 
     const dotenvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-dotenv-'));
     try {
@@ -2595,6 +2737,54 @@ async function runTests() {
     }
   }
   console.log('  ✔ Provider config resolves with flag > env > .env precedence.');
+
+  // Context window override precedence (#215): flag > env > .buildwithai/.env
+  const savedWindowEnv = process.env.OLLAMA_CONTEXT_WINDOW;
+  delete process.env.OLLAMA_CONTEXT_WINDOW;
+  const windowDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-context-window-'));
+  try {
+    assert.strictEqual(resolveProviderConfig({ provider: 'ollama', cwd: windowDir }).contextWindow, null);
+
+    fs.mkdirSync(path.join(windowDir, '.buildwithai'), { recursive: true });
+    fs.writeFileSync(path.join(windowDir, '.buildwithai', '.env'), 'OLLAMA_CONTEXT_WINDOW=16384\n');
+    assert.strictEqual(resolveProviderConfig({ provider: 'ollama', cwd: windowDir }).contextWindow, 16384);
+
+    process.env.OLLAMA_CONTEXT_WINDOW = '32768';
+    assert.strictEqual(
+      resolveProviderConfig({ provider: 'ollama', cwd: windowDir }).contextWindow,
+      32768,
+      'Env var must beat .env'
+    );
+    assert.strictEqual(
+      resolveProviderConfig({ provider: 'ollama', cwd: windowDir, contextWindow: '65536' }).contextWindow,
+      65536,
+      'Flag must beat env var'
+    );
+    assert.strictEqual(
+      resolveProviderConfig({ provider: 'openai', cwd: windowDir }).contextWindow,
+      null,
+      'Overrides are scoped to their provider prefix'
+    );
+
+    for (const bad of ['0', '-5', '8k', '1.5', 'abc']) {
+      assert.throws(
+        () => resolveProviderConfig({ provider: 'ollama', cwd: windowDir, contextWindow: bad }),
+        /Invalid context window .* from --context-window/,
+        `Rejects --context-window ${bad}`
+      );
+    }
+    process.env.OLLAMA_CONTEXT_WINDOW = 'lots';
+    assert.throws(
+      () => resolveProviderConfig({ provider: 'ollama', cwd: windowDir }),
+      /from OLLAMA_CONTEXT_WINDOW/,
+      'Invalid env values name the variable'
+    );
+  } finally {
+    if (savedWindowEnv === undefined) delete process.env.OLLAMA_CONTEXT_WINDOW;
+    else process.env.OLLAMA_CONTEXT_WINDOW = savedWindowEnv;
+    fs.rmSync(windowDir, { recursive: true, force: true });
+  }
+  console.log('  ✔ Context window overrides resolve with flag > env > .env precedence and reject bad values.');
 
   // chatCompletion: mocked network for every protocol (no real calls)
   const calls = [];
@@ -2652,7 +2842,7 @@ async function runTests() {
 
   calls.length = 0;
   const anthropicText = await chatCompletion(
-    { kind: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-haiku-4-6', apiKey: 'ak' },
+    { kind: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-haiku-5-5', apiKey: 'ak' },
     messages,
     { fetchImpl: mockFetch({ content: [{ type: 'text', text: 'claude says hi' }] }) }
   );
@@ -2669,7 +2859,7 @@ async function runTests() {
     {
       kind: 'gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       apiKey: 'gk'
     },
     messages,
@@ -2681,7 +2871,7 @@ async function runTests() {
   );
   assert.strictEqual(geminiText, 'gemini says hi');
   assert.ok(calls[0].url.includes(':generateContent'), 'Gemini path');
-  assert.ok(calls[0].url.includes('gemini-2.5-flash'), 'Gemini model in URL');
+  assert.ok(calls[0].url.includes('gemini-3.8-flash'), 'Gemini model in URL');
   assert.strictEqual(calls[0].init.headers['x-goog-api-key'], 'gk');
   const geminiBody = JSON.parse(calls[0].init.body);
   assert.strictEqual(geminiBody.systemInstruction.parts[0].text, 'Be terse.');
@@ -2702,6 +2892,92 @@ async function runTests() {
     'Non-JSON bodies must reject'
   );
   console.log('  ✔ chatCompletion speaks OpenAI, Anthropic, Gemini and Ollama protocols (mocked).');
+
+  // Token budgets (#215)
+  const {
+    estimateTokens,
+    resolveContextWindow,
+    buildTokenBudget,
+    formatBudgetWarning,
+    WARNING_THRESHOLD
+  } = require('../lib/tokenBudget');
+  assert.strictEqual(estimateTokens(''), 0);
+  assert.strictEqual(estimateTokens(undefined), 0);
+  assert.strictEqual(estimateTokens('abcd'), 1);
+  assert.strictEqual(estimateTokens('abcde'), 2, 'Partial tokens round up');
+  assert.strictEqual(estimateTokens('x'.repeat(4000)), 1000);
+
+  assert.deepStrictEqual(resolveContextWindow({ provider: 'openai', model: 'gpt-4o-mini' }), {
+    tokens: 128000,
+    source: 'model'
+  });
+  assert.strictEqual(resolveContextWindow({ provider: 'openai', model: 'o1-preview' }).tokens, 128000);
+  assert.strictEqual(resolveContextWindow({ provider: 'openai', model: 'o3-mini' }).tokens, 200000);
+  assert.strictEqual(resolveContextWindow({ provider: 'anthropic', model: 'claude-haiku-4-6' }).tokens, 200000);
+  assert.strictEqual(
+    resolveContextWindow({ provider: 'together', model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo' }).tokens,
+    128000,
+    'Namespaced hosted model ids match on their last segment'
+  );
+  assert.deepStrictEqual(resolveContextWindow({ provider: 'openai', model: 'some-future-model' }), {
+    tokens: 128000,
+    source: 'provider-default'
+  });
+  assert.deepStrictEqual(
+    resolveContextWindow({ provider: 'ollama', model: 'llama3.1' }),
+    { tokens: 8192, source: 'provider-default' },
+    'Ollama uses its num_ctx-bound default regardless of the model'
+  );
+  assert.deepStrictEqual(resolveContextWindow({ provider: 'jev', model: 'jev-standard' }), {
+    tokens: null,
+    source: 'unknown'
+  });
+  assert.deepStrictEqual(resolveContextWindow({ provider: 'ollama', model: 'llama3.1', override: 32768 }), {
+    tokens: 32768,
+    source: 'override'
+  });
+  assert.strictEqual(
+    resolveContextWindow({ provider: 'ollama', override: 0 }).source,
+    'provider-default',
+    'Non-positive overrides are ignored'
+  );
+  console.log('  ✔ Token estimates and context window lookup (model, provider default, override, unknown).');
+
+  const budgetFor = (totalChars, extra = {}) =>
+    buildTokenBudget({ prompt: 'x'.repeat(totalChars), provider: 'ollama', model: 'llama3.1', ...extra });
+  const below = budgetFor(4 * Math.floor(8192 * WARNING_THRESHOLD) - 4);
+  assert.strictEqual(below.status, 'ok');
+  assert.strictEqual(formatBudgetWarning(below), null, 'No warning below the threshold');
+  const atThreshold = budgetFor(4 * Math.ceil(8192 * WARNING_THRESHOLD));
+  assert.strictEqual(atThreshold.status, 'warning', 'Warns at 75% of the window');
+  const overflow = budgetFor(4 * 8192);
+  assert.strictEqual(overflow.status, 'overflow');
+  assert.strictEqual(overflow.percentOfContext, 100);
+
+  const split = buildTokenBudget({ prompt: 'x'.repeat(400), systemPrompt: 'y'.repeat(40), provider: 'openai' });
+  assert.strictEqual(split.promptTokens, 100);
+  assert.strictEqual(split.systemTokens, 10);
+  assert.strictEqual(split.totalTokens, 110, 'System prompt counts toward the budget');
+  assert.strictEqual(split.model, null);
+  const unknown = buildTokenBudget({ prompt: 'x'.repeat(10 ** 6), provider: 'jev' });
+  assert.strictEqual(unknown.status, 'unknown');
+  assert.strictEqual(unknown.percentOfContext, null);
+  assert.strictEqual(formatBudgetWarning(unknown), null, 'Unknown windows never warn');
+
+  const warningText = formatBudgetWarning(atThreshold, { envPrefix: 'OLLAMA' });
+  assert.match(warningText, /close to the context window/);
+  assert.match(warningText, /8,192-token context window of llama3\.1/);
+  assert.match(warningText, /num_ctx/, 'Ollama warnings explain num_ctx');
+  assert.match(warningText, /OLLAMA_CONTEXT_WINDOW/);
+  const overflowText = formatBudgetWarning(budgetFor(4 * 9000, { contextWindow: 8192 }));
+  assert.match(overflowText, /likely exceeds the context window/);
+  assert.doesNotMatch(overflowText, /--context-window/, 'No override hint when the window was overridden');
+  assert.doesNotMatch(
+    formatBudgetWarning(buildTokenBudget({ prompt: 'x'.repeat(4 * 120000), provider: 'openai', model: 'gpt-4o' })),
+    /num_ctx/,
+    'The num_ctx hint is Ollama-only'
+  );
+  console.log('  ✔ Token budgets flag prompts at 75% and 100% of the window with actionable warnings.');
 
   // Parsing: file blocks + decisions
   const sample = [
@@ -2783,6 +3059,73 @@ async function runTests() {
   assert.strictEqual(taggedCrlfBlocks[0].content, 'console.log(1);', 'CRLF normalized, no trailing \\r');
   const crlf = '```src/app.js\r\nline1\r\nline2\r\n```';
   assert.strictEqual(parseFileBlocks(crlf)[0].content, 'line1\nline2', 'CRLF line endings normalized to LF');
+
+  // Truncated blocks are dropped, reported, and must not swallow the
+  // block that follows them (#213)
+  const truncatedEof = '```src/partial.js\nconst x = 1;\n';
+  assert.deepStrictEqual(parseFileBlocks(truncatedEof), [], 'truncated block at EOF is never parsed');
+  assert.deepStrictEqual(
+    findTruncatedFileBlocks(truncatedEof).map((b) => b.path),
+    ['src/partial.js'],
+    'truncated block at EOF is reported'
+  );
+  const truncatedThenValid = [
+    '```src/broken.js',
+    'function broken(',
+    '```src/good.js',
+    "console.log('good');",
+    '```'
+  ].join('\n');
+  assert.deepStrictEqual(
+    parseFileBlocks(truncatedThenValid).map((b) => b.path),
+    ['src/good.js'],
+    'a truncated block must not swallow the following block'
+  );
+  assert.deepStrictEqual(
+    findTruncatedFileBlocks(truncatedThenValid).map((b) => b.path),
+    ['src/broken.js'],
+    'truncated block before a valid block is reported'
+  );
+  assert.deepStrictEqual(findTruncatedFileBlocks(sample), [], 'well-formed blocks report nothing truncated');
+  assert.deepStrictEqual(
+    findTruncatedFileBlocks('```javascript\nconsole.log(1);\n'),
+    [],
+    'a truncated explanatory snippet is not a truncated file block'
+  );
+
+  // Syntax validation: JSON, JS and Python (#213)
+  assert.strictEqual(validateBlockContent({ path: 'data.json', content: '{ "a": 1 }' }).valid, true);
+  assert.strictEqual(validateBlockContent({ path: 'data.json', content: '{ bad json' }).valid, false);
+  assert.strictEqual(validateBlockContent({ path: 'src/app.js', content: "console.log('ok');" }).valid, true);
+  assert.strictEqual(
+    validateBlockContent({ path: 'src/app.js', content: 'function broken(' }).valid,
+    false,
+    'unclosed JS function must fail validation'
+  );
+  assert.strictEqual(
+    validateBlockContent({ path: 'src/app.mjs', content: "import fs from 'node:fs';\nfs.existsSync('.');" }).valid,
+    true,
+    'ESM import in .mjs must pass'
+  );
+  assert.strictEqual(
+    validateBlockContent({ path: 'src/app.js', content: "import fs from 'node:fs';\nfs.existsSync('.');" }).valid,
+    true,
+    'ESM import in .js must pass (tried as both module systems)'
+  );
+  const pyBad = validateBlockContent({ path: 'script.py', content: 'def broken(\n  pass\n' });
+  if (pyBad.skipped) {
+    console.log('  (python3 not available — Python validation skipped)');
+  } else {
+    assert.strictEqual(pyBad.valid, false, 'unclosed Python function must fail validation');
+    assert.strictEqual(validateBlockContent({ path: 'script.py', content: 'print("ok")\n' }).valid, true);
+  }
+  assert.strictEqual(
+    validateBlockContent({ path: 'src/app.jsx', content: 'function broken(' }).valid,
+    true,
+    'JSX is not parser-checked (needs a transpiler) and always passes'
+  );
+  console.log('  ✔ Truncated-block detection and syntax validation.');
+
   console.log('  ✔ File-block and decisions parsing.');
 
   // Alternative auth decision keys surface in export and rules (#195)
@@ -2806,6 +3149,52 @@ async function runTests() {
   const bothCtx = { project: {}, decisions: { authStrategy: 'NextAuth.js', authProvider: 'Clerk' } };
   assert(generateReadme({}, bothCtx).includes('NextAuth.js'), 'authStrategy takes precedence');
   assert(!generateReadme({}, bothCtx).includes('Clerk'), 'fallback alias must not appear when authStrategy present');
+
+  // Regression (#186): autonomous runs save all decisions under context.decisions.
+  const autonomousDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-autonomous-decisions-'));
+  try {
+    initState(
+      {
+        projectName: 'Autonomous Decisions Demo',
+        templateId: 'web-app',
+        templateTitle: 'Full-Stack Web Application',
+        experienceLevel: 'Beginner',
+        projectIdea: 'Verify decision namespace',
+        totalSteps: webAppTemplate.stepCount
+      },
+      autonomousDir
+    );
+    const decisionReply = [
+      '```decisions',
+      '{"database":"PostgreSQL","decisions.authStrategy":"NextAuth.js","deploymentPlatform":"Vercel"}',
+      '```'
+    ].join('\n');
+    const responseBody = JSON.stringify({ choices: [{ message: { content: decisionReply } }] });
+    const preload = path.join(autonomousDir, 'mock-ai.js');
+    const mockFetchBody = JSON.stringify(responseBody);
+    const mockFetchSource = `globalThis.fetch = async () => ({ ok: true, text: async () => ${mockFetchBody} });\n`;
+    fs.writeFileSync(preload, mockFetchSource, 'utf8');
+    const execution = require('child_process').spawnSync(
+      process.execPath,
+      ['--require', preload, path.join(__dirname, '..', 'bin', 'cli.js'), 'next', '--run', '--provider', 'ollama'],
+      { cwd: autonomousDir, encoding: 'utf8', timeout: 15000 }
+    );
+    assert.strictEqual(execution.status, 0, `Autonomous run failed: ${execution.stderr}`);
+    const autonomousContext = loadContext(autonomousDir);
+    assert.strictEqual(autonomousContext.decisions.database, 'PostgreSQL');
+    assert.strictEqual(autonomousContext.decisions.authStrategy, 'NextAuth.js');
+    assert.strictEqual(autonomousContext.decisions.deploymentPlatform, 'Vercel');
+    assert.strictEqual(autonomousContext.database, undefined, 'No decision should leak to the root');
+    assert.strictEqual(autonomousContext['decisions.authStrategy'], undefined, 'No literal dotted root key');
+    const autonomousState = loadState(autonomousDir);
+    assert.deepStrictEqual(autonomousState.completedSteps, [1]);
+    assert.strictEqual(autonomousState.currentStep, 2);
+    assert(generateReadme({}, autonomousContext).includes('PostgreSQL'), 'Export recognizes captured database');
+    assert(generateRulesContent(autonomousContext).includes('PostgreSQL'), 'Rules recognize captured database');
+  } finally {
+    fs.rmSync(autonomousDir, { recursive: true, force: true });
+  }
+  console.log('  ✔ Autonomous decisions use context.decisions for plain and prefixed keys.');
 
   // Safe paths: traversal and absolute paths are rejected
   const safeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-aiclient-'));
@@ -2858,6 +3247,25 @@ async function runTests() {
     assert.strictEqual(reserved[3].written, false, 'Reserved workflows block is skipped, never written');
     assert.strictEqual(reserved[4].written, false, 'Reserved .env block is skipped, never written');
     assert.ok(!fs.existsSync(path.join(safeDir, '.git')), 'Reserved .git directory must not be created');
+
+    // Syntactically invalid blocks are never written unless forced (#213)
+    const invalid = writeFileBlocks(safeDir, [
+      { path: 'bad.json', content: '{ bad json' },
+      { path: 'bad.js', content: 'function broken(' },
+      { path: 'good.json', content: '{ "a": 1 }' },
+      { path: 'good.js', content: "console.log('ok');" }
+    ]);
+    assert.strictEqual(invalid[0].written, false, 'malformed JSON must not be written');
+    assert.ok(invalid[0].skipped.includes('invalid syntax'), 'malformed JSON skip reason names the problem');
+    assert.strictEqual(invalid[1].written, false, 'invalid JS must not be written');
+    assert.strictEqual(invalid[2].written, true, 'valid JSON is still written');
+    assert.strictEqual(invalid[3].written, true, 'valid JS is still written');
+    assert.ok(!fs.existsSync(path.join(safeDir, 'bad.json')), 'malformed JSON file must not exist on disk');
+    assert.ok(!fs.existsSync(path.join(safeDir, 'bad.js')), 'invalid JS file must not exist on disk');
+    const forced = writeFileBlocks(safeDir, [{ path: 'bad.js', content: 'function broken(' }], { force: true });
+    assert.strictEqual(forced[0].written, true, '--force writes an invalid block');
+    assert.ok(forced[0].validationError, '--force result still reports the validation error');
+    assert.ok(fs.existsSync(path.join(safeDir, 'bad.js')), 'forced invalid JS file exists on disk');
 
     const diff = renderDiff('line1\nline2\nline3\n', 'line1\nCHANGED\nline3\n', { color: false });
     assert.ok(diff.includes('- line2'), 'Removed line marked');
@@ -3086,6 +3494,501 @@ async function runTests() {
     require('inquirer').prompt = originalPrompt;
     process.exitCode = undefined;
     fs.rmSync(successfulInitDir, { recursive: true, force: true });
+  }
+
+  // Milestone 4: non-interactive re-initialization is explicit and opt-in.
+  // `--yes` alone must never destroy existing progress; `--force` must replace
+  // it completely, and `--force` on its own must still run the wizard.
+  console.log('\n▶ Milestone 4: Non-interactive re-init requires --force (D4)');
+  const reinitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-reinit-'));
+  const reinitPriorExitCode = process.exitCode;
+  try {
+    initState(
+      {
+        projectName: 'Original Project',
+        templateId: 'web-app',
+        templateTitle: 'Full-Stack Web Application',
+        experienceLevel: 'Beginner',
+        projectIdea: 'The original idea.',
+        totalSteps: 23
+      },
+      reinitDir
+    );
+    saveHistory(1, '# Original step 1 response', reinitDir);
+    const reinitStatePath = path.join(getStorageDir(reinitDir), 'state.json');
+    const reinitContextPath = path.join(getStorageDir(reinitDir), 'context.json');
+    const reinitStateBefore = fs.readFileSync(reinitStatePath, 'utf8');
+    const reinitContextBefore = fs.readFileSync(reinitContextPath, 'utf8');
+
+    // 1. Without --force: fail, mention --force, change nothing.
+    const reinitOriginalConsoleError = console.error;
+    const reinitErrors = [];
+    console.error = (...args) => reinitErrors.push(args.join(' '));
+    try {
+      process.exitCode = 0;
+      await runInit(
+        {
+          yes: true,
+          nonInteractive: true,
+          template: 'saas-mvp',
+          name: 'Blocked By Guard',
+          level: 'Experienced',
+          idea: 'A replacement idea.'
+        },
+        reinitDir
+      );
+    } finally {
+      console.error = reinitOriginalConsoleError;
+    }
+    assert.strictEqual(process.exitCode, 1, 'Re-init without --force must fail with exit code 1');
+    assert.ok(reinitErrors.join('\n').includes('--force'), 'The guard message must tell the user to pass --force');
+    assert.strictEqual(
+      fs.readFileSync(reinitStatePath, 'utf8'),
+      reinitStateBefore,
+      'state.json must be byte-identical after a blocked re-init'
+    );
+    assert.strictEqual(
+      fs.readFileSync(reinitContextPath, 'utf8'),
+      reinitContextBefore,
+      'context.json must be byte-identical after a blocked re-init'
+    );
+    assert.strictEqual(
+      loadHistory(1, reinitDir),
+      '# Original step 1 response',
+      'History must survive a blocked re-init'
+    );
+    assert.strictEqual(loadState(reinitDir).projectName, 'Original Project');
+    console.log('  ✔ Re-init without --force exits 1 and leaves state, context, and history untouched.');
+
+    // 2. With --force: replace state, context, and history.
+    process.exitCode = 0;
+    await runInit(
+      {
+        yes: true,
+        force: true,
+        nonInteractive: true,
+        template: 'saas-mvp',
+        name: 'Replaced Project',
+        level: 'Experienced',
+        idea: 'A billing engine.'
+      },
+      reinitDir
+    );
+    assert.strictEqual(process.exitCode, 0, 'Forced re-init must succeed');
+    const replacedState = loadState(reinitDir);
+    assert.strictEqual(replacedState.projectName, 'Replaced Project');
+    assert.strictEqual(replacedState.templateId, 'saas-mvp');
+    assert.strictEqual(replacedState.experienceLevel, 'Experienced');
+    assert.strictEqual(replacedState.projectIdea, 'A billing engine.');
+    assert.strictEqual(replacedState.currentStep, 1);
+    assert.deepStrictEqual(replacedState.completedSteps, []);
+    const saasTemplate = loadTemplates().find((template) => template.id === 'saas-mvp');
+    assert.ok(saasTemplate, 'saas-mvp must exist in the built-in templates');
+    assert.strictEqual(replacedState.totalSteps, saasTemplate.stepCount, 'Step count must follow the new template');
+    assert.deepStrictEqual(getAllHistory(reinitDir), [], 'Forced re-init must clear previous history');
+    assert.strictEqual(
+      loadContext(reinitDir).project.name,
+      'Replaced Project',
+      'Context must describe the new project'
+    );
+    console.log('  ✔ Forced re-init replaces state, context, history, and the step count.');
+
+    // 3. --force with a valid custom template persists the new template.
+    const reinitCustomPath = path.join(reinitDir, 'reinit-custom.json');
+    fs.writeFileSync(
+      reinitCustomPath,
+      JSON.stringify({
+        title: 'Re-init custom template',
+        type: 'reinit-custom',
+        steps: [{ id: 'only-step', prompt: 'Ship {{project.name}}.' }]
+      })
+    );
+    process.exitCode = 0;
+    await runInit(
+      {
+        yes: true,
+        force: true,
+        nonInteractive: true,
+        template: reinitCustomPath,
+        name: 'Custom Project'
+      },
+      reinitDir
+    );
+    assert.strictEqual(process.exitCode, 0, 'Forced re-init with a custom template must succeed');
+    const persistedTemplatePath = path.join(getStorageDir(reinitDir), 'template.json');
+    assert.ok(fs.existsSync(persistedTemplatePath), 'A custom template must be persisted to template.json');
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(persistedTemplatePath, 'utf8')).title,
+      'Re-init custom template',
+      'The persisted template must be the one supplied to the re-init'
+    );
+    const customReinitState = loadState(reinitDir);
+    assert.strictEqual(
+      customReinitState.templateId,
+      'reinit-custom',
+      'Custom template ids come from the file basename'
+    );
+    assert.strictEqual(customReinitState.totalSteps, 1);
+    console.log('  ✔ Forced re-init with a custom template persists the new template.json.');
+
+    // 4. Re-initializing back to a built-in must not leave the custom copy behind.
+    process.exitCode = 0;
+    await runInit(
+      {
+        yes: true,
+        force: true,
+        nonInteractive: true,
+        template: 'web-app',
+        name: 'Back To Builtin'
+      },
+      reinitDir
+    );
+    assert.strictEqual(process.exitCode, 0, 'Forced re-init back to a built-in template must succeed');
+    assert.strictEqual(
+      fs.existsSync(persistedTemplatePath),
+      false,
+      'A built-in re-init must delete the stale .buildwithai/template.json'
+    );
+    assert.strictEqual(loadState(reinitDir).templateId, 'web-app');
+    console.log('  ✔ A built-in re-init removes the stale custom template copy.');
+
+    // 4b. The same invariant at the writer itself: initState is the only place
+    // template.json is managed, so it must not leave a copy that contradicts
+    // state.json even when a caller re-initializes in place (no resetProject).
+    const templateInvariantDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-template-invariant-'));
+    try {
+      initState(
+        {
+          projectName: 'Legacy Custom',
+          templateId: 'legacy-custom',
+          templateTitle: 'Legacy Custom',
+          experienceLevel: 'Beginner',
+          projectIdea: 'Legacy idea.',
+          totalSteps: 1,
+          customTemplate: {
+            id: 'legacy-custom',
+            type: 'legacy-custom',
+            title: 'Legacy Custom',
+            stepCount: 1,
+            steps: [{ id: 'legacy-step', prompt: 'Do the legacy thing.' }]
+          }
+        },
+        templateInvariantDir
+      );
+      const invariantTemplatePath = path.join(getStorageDir(templateInvariantDir), 'template.json');
+      assert.ok(fs.existsSync(invariantTemplatePath), 'initState persists a custom template');
+
+      initState(
+        {
+          projectName: 'Builtin Again',
+          templateId: 'web-app',
+          templateTitle: 'Full-Stack Web Application',
+          experienceLevel: 'Intermediate',
+          projectIdea: 'Built-in idea.',
+          totalSteps: 23
+        },
+        templateInvariantDir
+      );
+      assert.strictEqual(
+        fs.existsSync(invariantTemplatePath),
+        false,
+        'initState must remove a stale template.json when no custom template is supplied'
+      );
+      assert.strictEqual(loadState(templateInvariantDir).templateId, 'web-app');
+      console.log('  ✔ initState drops a stale template.json when re-initializing in place.');
+    } finally {
+      fs.rmSync(templateInvariantDir, { recursive: true, force: true });
+    }
+
+    // 5. --force alone is not non-interactive: the wizard still runs.
+    const reinitOriginalPrompt = require('inquirer').prompt;
+    let reinitPromptCalls = 0;
+    require('inquirer').prompt = async () => {
+      reinitPromptCalls += 1;
+      return {
+        templateId: 'web-app',
+        experienceLevel: 'Intermediate',
+        projectName: 'Prompted Again',
+        projectIdea: 'Prompted idea.'
+      };
+    };
+    try {
+      process.exitCode = 0;
+      await runInit({ force: true }, reinitDir);
+    } finally {
+      require('inquirer').prompt = reinitOriginalPrompt;
+    }
+    assert.strictEqual(process.exitCode, 0, 'Interactive re-init with --force must succeed');
+    assert.strictEqual(reinitPromptCalls, 1, '--force alone must still run the interactive wizard');
+    assert.strictEqual(loadState(reinitDir).projectName, 'Prompted Again');
+    console.log('  ✔ --force alone still runs the wizard; it does not imply non-interactive.');
+  } finally {
+    process.exitCode = reinitPriorExitCode;
+    fs.rmSync(reinitDir, { recursive: true, force: true });
+  }
+
+  // The same contract through the real CLI, with stdin closed so any prompt
+  // would hang or exit 130 instead of quietly succeeding.
+  console.log('\n▶ Milestone 4: CLI re-init exit codes with a closed stdin');
+  const cliReinitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-cli-reinit-'));
+  try {
+    const cliReinitBin = path.join(__dirname, '..', 'bin', 'cli.js');
+    const runCliInit = (args) =>
+      require('child_process').spawnSync(process.execPath, [cliReinitBin, 'init', ...args], {
+        cwd: cliReinitDir,
+        encoding: 'utf8',
+        timeout: 60000,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+
+    const cliFirst = runCliInit(['-y', '--template', 'web-app', '--name', 'Cli Reinit']);
+    assert.strictEqual(cliFirst.status, 0, `Headless init must exit 0. stderr: ${cliFirst.stderr}`);
+    assert.strictEqual(isInitialized(cliReinitDir), true);
+
+    const cliBlocked = runCliInit(['-y', '--template', 'web-app', '--name', 'Cli Blocked']);
+    const cliBlockedOutput = `${cliBlocked.stdout}${cliBlocked.stderr}`;
+    assert.strictEqual(cliBlocked.status, 1, 'CLI re-init without --force must exit 1');
+    assert.ok(cliBlockedOutput.includes('--force'), 'The CLI must explain that --force is required');
+    assert.strictEqual(loadState(cliReinitDir).projectName, 'Cli Reinit', 'The CLI must preserve the original project');
+
+    const cliForced = runCliInit(['-y', '--force', '--template', 'saas-mvp', '--name', 'Cli Forced']);
+    assert.strictEqual(cliForced.status, 0, `Forced CLI re-init must exit 0. stderr: ${cliForced.stderr}`);
+    const cliForcedState = loadState(cliReinitDir);
+    assert.strictEqual(cliForcedState.projectName, 'Cli Forced');
+    assert.strictEqual(cliForcedState.templateId, 'saas-mvp');
+    console.log('  ✔ CLI exits 1 without --force and 0 with it, without ever reading stdin.');
+  } finally {
+    fs.rmSync(cliReinitDir, { recursive: true, force: true });
+  }
+
+  // Milestone 5: the non-interactive contract through the real CLI. Every spawn
+  // closes stdin, so a leaked prompt would hang or exit 130 instead of passing.
+  console.log('\n▶ Milestone 5: Non-interactive init CLI integration');
+  const { spawn } = require('child_process');
+  const initCliBin = path.join(__dirname, '..', 'bin', 'cli.js');
+  const initCliEnv = { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' };
+  const runInitCli = (dir, args) =>
+    spawnSync(process.execPath, [initCliBin, 'init', ...args], {
+      cwd: dir,
+      env: initCliEnv,
+      encoding: 'utf8',
+      timeout: 60000,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+  const runInitCliAsync = (dir, args) =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, [initCliBin, 'init', ...args], {
+        cwd: dir,
+        env: initCliEnv,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+      const timer = setTimeout(() => {
+        child.kill();
+        resolve({ status: null, stdout, stderr, timedOut: true });
+      }, 60000);
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        resolve({ status: code, stdout, stderr, timedOut: false });
+      });
+    });
+  const initCliOutput = (result) => `${result.stdout}${result.stderr}`;
+  const initStateExists = (dir) => fs.existsSync(path.join(getStorageDir(dir), 'state.json'));
+  const withInitTempDir = async (prefix, fn) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    try {
+      await fn(dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  // 5.1 - `-y` alone fills every value from the documented defaults.
+  await withInitTempDir('buildwithai-cli-defaults-', (dir) => {
+    const result = runInitCli(dir, ['-y']);
+    assert.strictEqual(result.status, 0, `-y with no values must succeed. Output: ${initCliOutput(result)}`);
+    const state = loadState(dir);
+    assert.strictEqual(state.projectName, path.basename(dir), 'The default name is the cwd basename');
+    assert.strictEqual(state.templateId, DEFAULT_TEMPLATE_ID, 'The default template id is exported by lib/init');
+    assert.strictEqual(state.experienceLevel, DEFAULT_EXPERIENCE_LEVEL, 'The default level is Intermediate');
+    assert.strictEqual(state.projectIdea, DEFAULT_PROJECT_IDEA, 'The default idea is the documented sentence');
+    assert.strictEqual(
+      fs.existsSync(path.join(getStorageDir(dir), 'template.json')),
+      false,
+      'A built-in default must not persist template.json'
+    );
+    console.log('  ✔ -y alone applies the documented defaults.');
+  });
+
+  // 5.2 - all four flags, no `-y`, with a lower-case level.
+  await withInitTempDir('buildwithai-cli-flags-', (dir) => {
+    const result = runInitCli(dir, [
+      '--template',
+      'saas-mvp',
+      '--name',
+      'Full Flags App',
+      '--level',
+      'beginner',
+      '--idea',
+      'Integration idea.'
+    ]);
+    assert.strictEqual(
+      result.status,
+      0,
+      `Four explicit flags must succeed headlessly. Output: ${initCliOutput(result)}`
+    );
+    const state = loadState(dir);
+    assert.strictEqual(state.projectName, 'Full Flags App');
+    assert.strictEqual(state.templateId, 'saas-mvp');
+    assert.strictEqual(state.experienceLevel, 'Beginner', 'Levels are canonicalized case-insensitively');
+    assert.strictEqual(state.projectIdea, 'Integration idea.');
+    const saasTemplate = loadTemplates().find((template) => template.id === 'saas-mvp');
+    assert.strictEqual(state.totalSteps, saasTemplate.stepCount, 'Step count follows the chosen template');
+    console.log('  ✔ All four flags run headlessly and canonicalize the level.');
+  });
+
+  const assertInitRejected = (dir, result, expectedTexts) => {
+    const output = initCliOutput(result);
+    assert.strictEqual(result.status, 1, `Expected exit 1. Output: ${output}`);
+    for (const text of expectedTexts) {
+      assert.ok(output.includes(text), `Expected "${text}" in output: ${output}`);
+    }
+    assert.strictEqual(initStateExists(dir), false, 'A rejected init must not write state.json');
+  };
+
+  // 5.3 - some flags, no `--yes`, closed stdin: fail fast and name what is missing.
+  await withInitTempDir('buildwithai-cli-partial-', (dir) => {
+    assertInitRejected(dir, runInitCli(dir, ['--template', 'web-app', '--name', 'Partial App']), [
+      'missing required values',
+      '--level',
+      '--idea'
+    ]);
+    console.log('  ✔ Partial flags fail fast and name the missing flags.');
+  });
+
+  // 5.4 - unknown built-in template id.
+  await withInitTempDir('buildwithai-cli-unknown-template-', (dir) => {
+    assertInitRejected(dir, runInitCli(dir, ['-y', '--template', 'not-a-template', '--name', 'Bad App']), [
+      'Unknown template "not-a-template"',
+      'Available templates:',
+      'web-app'
+    ]);
+    console.log('  ✔ An unknown template id lists the available templates.');
+  });
+
+  // 5.5 - invalid experience level.
+  await withInitTempDir('buildwithai-cli-bad-level-', (dir) => {
+    assertInitRejected(
+      dir,
+      runInitCli(dir, ['-y', '--template', 'web-app', '--name', 'Bad App', '--level', 'Expert']),
+      ['Invalid experience level "Expert"', 'Beginner, Intermediate, or Experienced']
+    );
+    console.log('  ✔ An invalid level is rejected instead of silently ignored.');
+  });
+
+  // 5.6 - explicitly blank project name is not defaulted.
+  await withInitTempDir('buildwithai-cli-blank-name-', (dir) => {
+    assertInitRejected(dir, runInitCli(dir, ['-y', '--template', 'web-app', '--name', '   ']), [
+      'Project name cannot be empty'
+    ]);
+    console.log('  ✔ A blank --name is rejected, not replaced by the cwd basename.');
+  });
+
+  // 5.7 - explicitly empty template is not defaulted either.
+  await withInitTempDir('buildwithai-cli-empty-template-', (dir) => {
+    assertInitRejected(dir, runInitCli(dir, ['-y', '--template', '', '--name', 'Bad App']), [
+      'Template value cannot be empty'
+    ]);
+    console.log('  ✔ An empty --template is rejected; --yes only fills missing values.');
+  });
+
+  // 5.8 - local custom template path, classified as a file.
+  await withInitTempDir('buildwithai-cli-custom-', (dir) => {
+    const templateDir = path.join(dir, 'templates');
+    fs.mkdirSync(templateDir, { recursive: true });
+    const customTemplatePath = path.join(templateDir, 'integration-custom.json');
+    fs.writeFileSync(
+      customTemplatePath,
+      JSON.stringify({
+        title: 'Integration Custom',
+        type: 'integration-custom',
+        steps: [{ id: 'only-step', prompt: 'Ship {{project.name}}.' }]
+      })
+    );
+    const result = runInitCli(dir, ['-y', '--template', customTemplatePath, '--name', 'Custom CLI App']);
+    assert.strictEqual(result.status, 0, `A custom template path must succeed. Output: ${initCliOutput(result)}`);
+    const state = loadState(dir);
+    assert.strictEqual(state.templateId, 'integration-custom', 'The id comes from the file basename');
+    assert.strictEqual(state.totalSteps, 1);
+    const persisted = JSON.parse(fs.readFileSync(path.join(getStorageDir(dir), 'template.json'), 'utf8'));
+    assert.strictEqual(persisted.title, 'Integration Custom');
+    console.log('  ✔ A custom template path is loaded and persisted.');
+  });
+
+  // 5.9 - `--rules` still runs after a headless init.
+  await withInitTempDir('buildwithai-cli-rules-', (dir) => {
+    const result = runInitCli(dir, ['-y', '--rules', '--template', 'web-app', '--name', 'Rules App']);
+    assert.strictEqual(result.status, 0, `--rules must run after init. Output: ${initCliOutput(result)}`);
+    assert.ok(fs.existsSync(path.join(dir, '.cursorrules')), '--rules generates .cursorrules');
+    assert.ok(fs.existsSync(path.join(dir, 'CLAUDE.md')), '--rules generates CLAUDE.md');
+    console.log('  ✔ --rules still runs after a non-interactive init.');
+  });
+
+  // 5.10 - a URL is remote even though it also ends in .json and contains slashes.
+  const remoteInitServer = http.createServer((req, res) => {
+    if (req.url === '/remote-integration.json') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          title: 'Remote Integration',
+          steps: [{ id: 'remote-step', prompt: 'Ship {{project.name}} remotely.' }]
+        })
+      );
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => remoteInitServer.listen(0, '127.0.0.1', resolve));
+  try {
+    const remoteUrl = `http://127.0.0.1:${remoteInitServer.address().port}/remote-integration.json`;
+    await withInitTempDir('buildwithai-cli-remote-', async (dir) => {
+      const result = await runInitCliAsync(dir, ['-y', '--template', remoteUrl, '--name', 'Remote CLI App']);
+      assert.strictEqual(
+        result.status,
+        0,
+        `A remote template must succeed. timedOut=${result.timedOut} Output: ${initCliOutput(result)}`
+      );
+      const state = loadState(dir);
+      assert.strictEqual(state.templateId, 'remote-integration', 'Remote ids come from the URL path');
+      assert.strictEqual(state.templateTitle, 'Remote Integration');
+      assert.ok(
+        fs.existsSync(path.join(getStorageDir(dir), 'template.json')),
+        'A remote template must be persisted for later commands'
+      );
+      console.log('  ✔ A URL is classified as remote before the file heuristics.');
+    });
+
+    await withInitTempDir('buildwithai-cli-remote-missing-', async (dir) => {
+      const missingUrl = `http://127.0.0.1:${remoteInitServer.address().port}/missing-template.json`;
+      const result = await runInitCliAsync(dir, ['-y', '--template', missingUrl, '--name', 'Remote Missing']);
+      assert.strictEqual(result.status, 1, `A failed remote load must exit 1. Output: ${initCliOutput(result)}`);
+      assert.ok(
+        initCliOutput(result).includes('Failed to load remote template'),
+        'A failed fetch must explain the failure'
+      );
+      assert.strictEqual(initStateExists(dir), false, 'A failed remote load must not write state.json');
+      console.log('  ✔ A failed remote download exits 1 and writes nothing.');
+    });
+  } finally {
+    await new Promise((resolve) => remoteInitServer.close(resolve));
   }
 
   // Cleanup temp dir

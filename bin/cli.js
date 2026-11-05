@@ -38,11 +38,14 @@ const { runValidate } = require('../lib/validate');
 const { runResume } = require('../lib/resume');
 const { runExport } = require('../lib/export');
 const { runRulesExport } = require('../lib/rules');
+const { buildStatusSummary } = require('../lib/status');
+const { DEFAULT_PORT, startDashboardServer, openBrowser } = require('../lib/dashboard');
 const logger = require('../lib/logger');
 
 const program = new Command();
 
 const { getMappings } = require('../lib/models');
+const { buildTokenBudget, formatBudgetWarning } = require('../lib/tokenBudget');
 
 program
   .command('models')
@@ -133,10 +136,17 @@ program
   .command('init')
   .description('Initialize a new AI-guided project workflow in the current directory.')
   .option('-f, --force', 'Force re-initialization if project already exists')
-  .option('-t, --template <path-or-url>', 'Load a custom template from a local file path or remote HTTPS URL')
+  .option(
+    '-t, --template <id|path|url>',
+    'Use a built-in template by ID, or load a custom template from a local file path or remote HTTPS URL'
+  )
+  .option('-y, --yes', 'Run without prompts, using defaults for any missing values')
+  .option('--name <string>', 'Project name for non-interactive initialization')
+  .option('--level <level>', 'Experience level: Beginner, Intermediate, or Experienced')
+  .option('--idea <string>', 'One-line project idea / problem description')
   .option('--rules', 'Sync editor rule files (.cursorrules, .windsurfrules, CLAUDE.md) from context.json after init')
   .action(async (options) => {
-    await runInit(options);
+    await runInit({ ...options, nonInteractive: !process.stdin.isTTY });
     if (options.rules) {
       if (!isInitialized()) return;
       if ((await runRulesExport(process.cwd(), {})) === false) process.exitCode = 1;
@@ -163,6 +173,7 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
     resolveProviderConfig,
     chatCompletion,
     parseFileBlocks,
+    findTruncatedFileBlocks,
     parseDecisionsBlock,
     resolveTargetPath,
     writeFileBlocks,
@@ -176,7 +187,8 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
       provider: options.provider,
       apiKey: options.apiKey,
       baseUrl: options.baseUrl,
-      model: options.model
+      model: options.model,
+      contextWindow: options.contextWindow
     });
   } catch (err) {
     logger.error(err.message);
@@ -203,6 +215,22 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
     targetFiles
   });
 
+  // Advisory only (#215): warn before sending a prompt that nears or
+  // exceeds the model's context window, but never block the run.
+  const budgetWarning = formatBudgetWarning(
+    buildTokenBudget({
+      prompt: resolvedPrompt,
+      systemPrompt: system,
+      provider: providerConfig.provider,
+      model: providerConfig.model,
+      contextWindow: providerConfig.contextWindow
+    }),
+    { envPrefix: providerConfig.envPrefix }
+  );
+  if (budgetWarning) {
+    logger.warn(budgetWarning);
+  }
+
   let response;
   try {
     response = await chatCompletion(providerConfig, [
@@ -220,6 +248,12 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
   const blocks = parseFileBlocks(response, targetFiles);
   let written = 0;
   let skipped = 0;
+  // Blocks without a closing fence are truncated: warn and never write
+  // partial content to disk (#213).
+  for (const truncated of findTruncatedFileBlocks(response, targetFiles)) {
+    skipped++;
+    logger.warn(`Skipping truncated file block "${truncated.path}" (missing closing fence) — not written.`);
+  }
   if (blocks.length === 0) {
     logger.warn('The AI response contained no file blocks.');
   } else {
@@ -253,11 +287,18 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
     if (apply) {
       for (const result of writeFileBlocks(
         process.cwd(),
-        applicable.map((entry) => entry.block)
+        applicable.map((entry) => entry.block),
+        { force: options.force === true }
       )) {
         if (result.written) {
           written++;
           logger.success(`${result.created ? 'Created' : 'Updated'} ${result.path}`);
+          if (result.validationError) {
+            logger.warn(`Wrote ${result.path} despite invalid syntax (--force): ${result.validationError}`);
+          }
+        } else if (result.skipped) {
+          skipped++;
+          logger.warn(`Skipping "${result.path}": ${result.skipped}.`);
         }
       }
     } else {
@@ -270,8 +311,10 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
   try {
     const decisions = parseDecisionsBlock(response);
     for (const [key, value] of Object.entries(decisions)) {
-      if (typeof key === 'string' && key.trim() && setByPath(context, key, value)) {
-        recorded.push(key);
+      if (!key.trim()) continue;
+      const targetKey = key.startsWith('decisions.') ? key : `decisions.${key}`;
+      if (setByPath(context, targetKey, value)) {
+        recorded.push(targetKey);
       }
     }
     if (recorded.length > 0) {
@@ -305,6 +348,37 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
 // with the direct CLI invocations (e.g. BUILD_WITH_AI_NO_COPY, --run,
 // deduplicated status logic).
 // ─────────────────────────────────────────────────
+
+/**
+ * Token budget for `next --json` (#215): what `next --run` would send (the
+ * step prompt plus the run system prompt) against the provider and model it
+ * would use. A provider that cannot be resolved yields an unknown window
+ * instead of failing; an invalid --context-window is reported as an error.
+ */
+function buildNextTokenBudget({ currentStepNum, totalSteps, resolvedPrompt, targetFiles, options }) {
+  const { resolveProviderConfig, buildRunSystemPrompt } = require('../lib/aiClient');
+  let providerConfig = null;
+  try {
+    providerConfig = resolveProviderConfig({
+      provider: options.provider,
+      baseUrl: options.baseUrl,
+      model: options.model,
+      contextWindow: options.contextWindow
+    });
+  } catch (err) {
+    if (err.code === 'INVALID_CONTEXT_WINDOW') {
+      logger.error(err.message);
+      process.exit(1);
+    }
+  }
+  return buildTokenBudget({
+    prompt: resolvedPrompt,
+    systemPrompt: buildRunSystemPrompt({ stepNum: currentStepNum, totalSteps, targetFiles }),
+    provider: providerConfig ? providerConfig.provider : options.provider || null,
+    model: providerConfig ? providerConfig.model : options.model || null,
+    contextWindow: providerConfig ? providerConfig.contextWindow : null
+  });
+}
 
 async function runNextCommand(options = {}) {
   if (!isInitialized()) {
@@ -373,7 +447,8 @@ async function runNextCommand(options = {}) {
       recommendedAI,
       targetFiles,
       warnings,
-      prompt: resolvedPrompt
+      prompt: resolvedPrompt,
+      tokenBudget: buildNextTokenBudget({ currentStepNum, totalSteps, resolvedPrompt, targetFiles, options })
     };
     console.log(JSON.stringify(output, null, 2));
     return;
@@ -523,33 +598,20 @@ function runStatusCommand(options = {}) {
   const context = loadContext();
   const template = getTemplate(state.templateId);
 
-  const totalSteps = template ? template.steps.length : state.totalSteps || 0;
-  const currentStepNum = state.currentStep || 1;
-  const completedList = state.completedSteps || [];
-  const completedCount = countUniqueCompletedSteps(state.completedSteps, totalSteps);
-  const exportReady = totalSteps > 0 && completedCount === totalSteps;
-  const decisions = context.decisions || {};
-
+  const summary = buildStatusSummary(state, context, template);
   if (options.json) {
-    const output = {
-      projectName: state.projectName,
-      templateId: state.templateId,
-      templateTitle: state.templateTitle || state.templateId,
-      experienceLevel: state.experienceLevel,
-      projectIdea: state.projectIdea,
-      startedAt: state.startedAt || null,
-      updatedAt: state.updatedAt || null,
-      currentStep: currentStepNum,
-      totalSteps,
-      completedSteps: completedList,
-      completedCount,
-      progressPercent: totalSteps > 0 ? Math.round((completedCount / totalSteps) * 100) : 0,
-      exportReady,
-      decisions
-    };
-    console.log(JSON.stringify(output, null, 2));
+    console.log(JSON.stringify(summary, null, 2));
     return;
   }
+
+  const {
+    totalSteps,
+    currentStep: currentStepNum,
+    completedSteps: completedList,
+    completedCount,
+    exportReady,
+    decisions
+  } = summary;
 
   console.log();
   console.log(pc.bold(pc.cyan(`PROJECT STATUS: ${state.projectName}`)));
@@ -603,6 +665,47 @@ function runStatusCommand(options = {}) {
   console.log();
 }
 
+async function runUiCommand(options = {}) {
+  if (!isInitialized()) {
+    logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
+    process.exit(1);
+  }
+
+  const port = Number(options.port);
+  if (!/^\d+$/.test(String(options.port)) || port > 65535) {
+    logger.error('Invalid port. Use a whole number between 0 and 65535.');
+    process.exit(1);
+  }
+
+  let server;
+  let url;
+  try {
+    ({ server, url } = await startDashboardServer({ cwd: process.cwd(), port }));
+  } catch (error) {
+    logger.error(error.message);
+    process.exit(1);
+  }
+
+  console.log();
+  logger.success(`Dashboard running at ${pc.bold(pc.cyan(url))}`);
+  console.log(pc.dim('  Serving this project on 127.0.0.1 only. Press Ctrl+C to stop.'));
+  console.log();
+
+  if (options.open && process.stdout.isTTY && !process.env.CI) {
+    if (!(await openBrowser(url))) {
+      logger.warn(`Could not open a browser automatically. Visit ${url} instead.`);
+    }
+  }
+
+  const shutdown = () => {
+    server.close(() => process.exit(0));
+    // Idle keep-alive connections from the browser would otherwise delay exit.
+    server.closeAllConnections?.();
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
+}
+
 async function runExportCommand(options = {}) {
   if (!isInitialized()) {
     logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
@@ -635,7 +738,12 @@ program
   .option('--api-key <key>', 'API key for --run (overrides env vars and .buildwithai/.env)')
   .option('--model <model>', 'Model id override for --run')
   .option('--base-url <url>', 'API base URL override for --run')
+  .option(
+    '--context-window <tokens>',
+    'Model context window in tokens for --run and --json token budgets (overrides the built-in estimate)'
+  )
   .option('--review', 'With --run: show a colored diff of the proposed file changes and confirm before applying')
+  .option('--force', 'With --run: write file blocks even when syntax validation fails')
   .action(async (options) => {
     await runNextCommand(options);
   });
@@ -814,11 +922,16 @@ program
 
       // Full AI response
       if (recordChoice === 'full' || recordChoice === 'both') {
-        // Multi-line-safe editor when the clipboard read failed: pasting large
-        // AI responses into single-line terminal prompts can truncate text.
+        // Multi-line paste safety (#187): Inquirer's single-line `input`
+        // prompt captures only the first line of a pasted multi-line
+        // response and spills the rest into the shell. On an interactive
+        // terminal, open the `editor` prompt instead so the whole paste
+        // is captured. Piped (non-TTY) input keeps `input` so scripted
+        // and e2e flows are unaffected.
+        const fullResponseType = useClipboard || process.stdin.isTTY ? 'editor' : 'input';
         const { fullResponse } = await safePrompt([
           {
-            type: useClipboard ? 'editor' : 'input',
+            type: fullResponseType,
             name: 'fullResponse',
             message: 'Paste or enter the AI response (summary or key notes):',
             default: ''
@@ -1308,6 +1421,18 @@ program
   });
 
 // ─────────────────────────────────────────────────
+// `ui` command
+// ─────────────────────────────────────────────────
+program
+  .command('ui')
+  .description('Open a local browser dashboard for progress, decisions, history and exports.')
+  .option('-p, --port <number>', 'Port to serve the dashboard on (127.0.0.1 only)', String(DEFAULT_PORT))
+  .option('--no-open', 'Do not open the dashboard in a browser automatically')
+  .action(async (options) => {
+    await runUiCommand(options);
+  });
+
+// ─────────────────────────────────────────────────
 // Default action (no subcommand provided)
 // ─────────────────────────────────────────────────
 program.action(async () => {
@@ -1376,6 +1501,12 @@ program.action(async () => {
 });
 
 program.parseAsync(process.argv).catch((error) => {
-  console.error(error);
+  // Corrupted state with no snapshot to restore from already carries a
+  // complete, actionable message: print it without a stack trace (#211).
+  if (error && error.code === 'CORRUPTED_STATE_NO_SNAPSHOT') {
+    console.error(error.message);
+  } else {
+    console.error(error);
+  }
   process.exitCode = 1;
 });
