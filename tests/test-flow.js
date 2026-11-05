@@ -1443,7 +1443,16 @@ async function runTests() {
 
   // Test 10: Export Documentation
   console.log('\n▶ Test 10: Export (README.md, BUILD_LOG.md, CONTEXT.md)');
-  await runExport(tempDir);
+  const exportedPaths = await runExport(tempDir);
+  assert.deepStrictEqual(
+    exportedPaths,
+    [
+      path.join(tempDir, 'README.md'),
+      path.join(tempDir, 'BUILD_LOG.md'),
+      path.join(tempDir, '.buildwithai', 'CONTEXT.md')
+    ],
+    'runExport must return the written file paths'
+  );
 
   assert(fs.existsSync(path.join(tempDir, 'README.md')), 'README.md must be generated');
   assert(fs.existsSync(path.join(tempDir, 'BUILD_LOG.md')), 'BUILD_LOG.md must be generated');
