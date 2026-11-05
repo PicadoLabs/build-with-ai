@@ -42,6 +42,7 @@ const logger = require('../lib/logger');
 const program = new Command();
 
 const { getMappings } = require('../lib/models');
+const { buildTokenBudget, formatBudgetWarning } = require('../lib/tokenBudget');
 
 program
   .command('models')
@@ -132,10 +133,17 @@ program
   .command('init')
   .description('Initialize a new AI-guided project workflow in the current directory.')
   .option('-f, --force', 'Force re-initialization if project already exists')
-  .option('-t, --template <path-or-url>', 'Load a custom template from a local file path or remote HTTPS URL')
+  .option(
+    '-t, --template <id|path|url>',
+    'Use a built-in template by ID, or load a custom template from a local file path or remote HTTPS URL'
+  )
+  .option('-y, --yes', 'Run without prompts, using defaults for any missing values')
+  .option('--name <string>', 'Project name for non-interactive initialization')
+  .option('--level <level>', 'Experience level: Beginner, Intermediate, or Experienced')
+  .option('--idea <string>', 'One-line project idea / problem description')
   .option('--rules', 'Sync editor rule files (.cursorrules, .windsurfrules, CLAUDE.md) from context.json after init')
   .action(async (options) => {
-    await runInit(options);
+    await runInit({ ...options, nonInteractive: !process.stdin.isTTY });
     if (options.rules) {
       if (!isInitialized()) return;
       if ((await runRulesExport(process.cwd(), {})) === false) process.exitCode = 1;
@@ -150,8 +158,17 @@ program
 // saves the raw response to history, and advances the workflow — without
 // the copy/paste round-trip. Default `next` behavior is untouched.
 async function runAutonomousStep({ state, context, totalSteps, currentStepNum, resolvedPrompt, targetFiles, options }) {
-  const { resolveProviderConfig, chatCompletion, renderDiff, buildRunSystemPrompt } = require('../lib/aiClient');
-  const { planStepResponse, applyStepResponse } = require('../lib/stepRunner');
+  const {
+    resolveProviderConfig,
+    chatCompletion,
+    parseFileBlocks,
+    findTruncatedFileBlocks,
+    parseDecisionsBlock,
+    resolveTargetPath,
+    writeFileBlocks,
+    renderDiff,
+    buildRunSystemPrompt
+  } = require('../lib/aiClient');
 
   let providerConfig;
   try {
@@ -159,7 +176,8 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
       provider: options.provider,
       apiKey: options.apiKey,
       baseUrl: options.baseUrl,
-      model: options.model
+      model: options.model,
+      contextWindow: options.contextWindow
     });
   } catch (err) {
     logger.error(err.message);
@@ -186,6 +204,22 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
     targetFiles
   });
 
+  // Advisory only (#215): warn before sending a prompt that nears or
+  // exceeds the model's context window, but never block the run.
+  const budgetWarning = formatBudgetWarning(
+    buildTokenBudget({
+      prompt: resolvedPrompt,
+      systemPrompt: system,
+      provider: providerConfig.provider,
+      model: providerConfig.model,
+      contextWindow: providerConfig.contextWindow
+    }),
+    { envPrefix: providerConfig.envPrefix }
+  );
+  if (budgetWarning) {
+    logger.warn(budgetWarning);
+  }
+
   let response;
   try {
     response = await chatCompletion(providerConfig, [
@@ -200,10 +234,16 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
   // 1. File blocks → preview (with --review) → safe write.
   // targetFiles lets the parser accept extension-less declared targets
   // (e.g. Dockerfile) while still rejecting language-tagged fences (#134).
-  const cwd = process.cwd();
-  const plan = planStepResponse(cwd, response, targetFiles);
-  let apply = true;
-  if (plan.blocks.length === 0) {
+  const blocks = parseFileBlocks(response, targetFiles);
+  let written = 0;
+  let skipped = 0;
+  // Blocks without a closing fence are truncated: warn and never write
+  // partial content to disk (#213).
+  for (const truncated of findTruncatedFileBlocks(response, targetFiles)) {
+    skipped++;
+    logger.warn(`Skipping truncated file block "${truncated.path}" (missing closing fence) — not written.`);
+  }
+  if (blocks.length === 0) {
     logger.warn('The AI response contained no file blocks.');
   } else {
     for (const unsafePath of plan.unsafe) {
@@ -224,23 +264,45 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
         { type: 'confirm', name: 'apply', message: 'Apply these file changes?', default: true }
       ]));
     }
-    if (!apply) {
+
+    if (apply) {
+      for (const result of writeFileBlocks(
+        process.cwd(),
+        applicable.map((entry) => entry.block),
+        { force: options.force === true }
+      )) {
+        if (result.written) {
+          written++;
+          logger.success(`${result.created ? 'Created' : 'Updated'} ${result.path}`);
+          if (result.validationError) {
+            logger.warn(`Wrote ${result.path} despite invalid syntax (--force): ${result.validationError}`);
+          }
+        } else if (result.skipped) {
+          skipped++;
+          logger.warn(`Skipping "${result.path}": ${result.skipped}.`);
+        }
+      }
+    } else {
       console.log(pc.dim('File changes discarded.'));
     }
   }
 
-  // 2. Decisions → context, 3. history + advance, like `done` does.
-  const result = applyStepResponse({
-    cwd,
-    state,
-    context,
-    stepNum: currentStepNum,
-    response,
-    plan,
-    writeFiles: apply
-  });
-  for (const file of result.files) {
-    logger.success(`${file.created ? 'Created' : 'Updated'} ${file.path}`);
+  // 2. Decisions → context.
+  const recorded = [];
+  try {
+    const decisions = parseDecisionsBlock(response);
+    for (const [key, value] of Object.entries(decisions)) {
+      if (!key.trim()) continue;
+      const targetKey = key.startsWith('decisions.') ? key : `decisions.${key}`;
+      if (setByPath(context, targetKey, value)) {
+        recorded.push(targetKey);
+      }
+    }
+    if (recorded.length > 0) {
+      saveContext(context);
+    }
+  } catch (err) {
+    logger.warn(err.message);
   }
   if (plan.decisionsError) {
     logger.warn(plan.decisionsError);
@@ -262,6 +324,37 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
 // with the direct CLI invocations (e.g. BUILD_WITH_AI_NO_COPY, --run,
 // deduplicated status logic).
 // ─────────────────────────────────────────────────
+
+/**
+ * Token budget for `next --json` (#215): what `next --run` would send (the
+ * step prompt plus the run system prompt) against the provider and model it
+ * would use. A provider that cannot be resolved yields an unknown window
+ * instead of failing; an invalid --context-window is reported as an error.
+ */
+function buildNextTokenBudget({ currentStepNum, totalSteps, resolvedPrompt, targetFiles, options }) {
+  const { resolveProviderConfig, buildRunSystemPrompt } = require('../lib/aiClient');
+  let providerConfig = null;
+  try {
+    providerConfig = resolveProviderConfig({
+      provider: options.provider,
+      baseUrl: options.baseUrl,
+      model: options.model,
+      contextWindow: options.contextWindow
+    });
+  } catch (err) {
+    if (err.code === 'INVALID_CONTEXT_WINDOW') {
+      logger.error(err.message);
+      process.exit(1);
+    }
+  }
+  return buildTokenBudget({
+    prompt: resolvedPrompt,
+    systemPrompt: buildRunSystemPrompt({ stepNum: currentStepNum, totalSteps, targetFiles }),
+    provider: providerConfig ? providerConfig.provider : options.provider || null,
+    model: providerConfig ? providerConfig.model : options.model || null,
+    contextWindow: providerConfig ? providerConfig.contextWindow : null
+  });
+}
 
 async function runNextCommand(options = {}) {
   if (!isInitialized()) {
@@ -330,7 +423,8 @@ async function runNextCommand(options = {}) {
       recommendedAI,
       targetFiles,
       warnings,
-      prompt: resolvedPrompt
+      prompt: resolvedPrompt,
+      tokenBudget: buildNextTokenBudget({ currentStepNum, totalSteps, resolvedPrompt, targetFiles, options })
     };
     console.log(JSON.stringify(output, null, 2));
     return;
@@ -592,7 +686,12 @@ program
   .option('--api-key <key>', 'API key for --run (overrides env vars and .buildwithai/.env)')
   .option('--model <model>', 'Model id override for --run')
   .option('--base-url <url>', 'API base URL override for --run')
+  .option(
+    '--context-window <tokens>',
+    'Model context window in tokens for --run and --json token budgets (overrides the built-in estimate)'
+  )
   .option('--review', 'With --run: show a colored diff of the proposed file changes and confirm before applying')
+  .option('--force', 'With --run: write file blocks even when syntax validation fails')
   .action(async (options) => {
     await runNextCommand(options);
   });

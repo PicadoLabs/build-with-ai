@@ -24,7 +24,7 @@
 npx build-with-ai
 ```
 
-[Quickstart](#quickstart) &bull; [Workflow](#the-4-step-workflow) &bull; [Templates](#available-templates) &bull; [CLI Reference](#cli-reference) &bull; [Autonomous Mode](#byok-autonomous-mode) &bull; [MCP Server](#model-context-protocol-mcp) &bull; [Contributing](CONTRIBUTING.md)
+[Quickstart](#quickstart) &bull; [Workflow](#the-4-step-workflow) &bull; [Templates](#available-templates) &bull; [Non-Interactive Init](#non-interactive-initialization) &bull; [CLI Reference](#cli-reference) &bull; [Autonomous Mode](#byok-autonomous-mode) &bull; [MCP Server](#model-context-protocol-mcp) &bull; [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -88,6 +88,14 @@ Select a technology template, your experience level, and a project summary:
 npx build-with-ai init
 ```
 
+For CI, Docker, devcontainers, and coding agents, pass the values as flags instead of answering
+prompts:
+```bash
+npx build-with-ai init -y --template web-app --name "AutomatedApp"
+```
+See [Non-Interactive Initialization](#non-interactive-initialization) for defaults, exit codes, and
+re-initialization.
+
 ### 2. Generate Prompt (`next`)
 Formats the active phase requirements, identifies target files, and copies the context-injected prompt to your clipboard:
 ```bash
@@ -131,11 +139,15 @@ npx build-with-ai export --rules
 | `ai-orchestration` | Multi-Agent Orchestration | 14 | LangGraph / CrewAI, AutoGen, Vector DB, Telemetry |
 | `discord-bot` | Discord Bot Workflow | 12 | Node.js, discord.js v14, Slash Commands, SQLite / PostgreSQL |
 
-### Custom and Remote Templates
+### Custom, Remote, and Built-in Templates
 
-Load team-specific or custom templates from a local file or HTTPS URL:
+Load team-specific or custom templates from a local file or HTTPS URL, or pick a built-in one by
+ID:
 
 ```bash
+# Built-in template by ID
+npx build-with-ai init --template saas-mvp
+
 # Local JSON template
 npx build-with-ai init --template ./custom-template.json
 
@@ -146,7 +158,81 @@ npx build-with-ai init --template https://raw.githubusercontent.com/org/repo/mai
 npx build-with-ai search saas
 ```
 
-Custom templates are persisted to `.buildwithai/template.json` and work fully offline for all subsequent commands.
+When a value could be read more than one way, URLs win over paths and paths win over IDs. Custom
+templates are persisted to `.buildwithai/template.json` and work fully offline for all subsequent
+commands.
+
+---
+
+## Non-Interactive Initialization
+
+`init` can run with zero prompts. Supply the values as flags and the wizard is skipped entirely:
+stdin is never read, so a closed or piped stream cannot block the command.
+
+```bash
+npx build-with-ai init -y --template web-app --name "AutomatedApp"
+```
+
+### Flags
+
+| Flag | Description |
+| :--- | :--- |
+| `-y, --yes` | Never prompt. Missing values fall back to the defaults below. |
+| `--template <id\|path\|url>` | Built-in template ID, local JSON path, or HTTP(S) URL. |
+| `--name <string>` | Project name. |
+| `--level <level>` | `Beginner`, `Intermediate`, or `Experienced` (case-insensitive). |
+| `--idea <string>` | One-line project idea or problem description. |
+| `-f, --force` | Re-initialize an existing project. Required for a non-interactive re-init. |
+
+### Defaults under `--yes`
+
+| Value | Default |
+| :--- | :--- |
+| Template | `web-app` |
+| Project name | Name of the current directory |
+| Experience level | `Intermediate` |
+| Project idea | `A minimal web application that solves a real user problem.` |
+
+`--yes` fills **missing** values only. An explicitly empty value such as `--name ""` is rejected by
+validation instead of being replaced by a default.
+
+### Template resolution
+
+`--template` accepts three kinds of value, resolved in this order:
+
+1. An `http://` or `https://` URL is downloaded and persisted to `.buildwithai/template.json`.
+2. A value that exists on disk, contains a path separator, starts with `.`, or ends in `.json` is
+   loaded as a local template file.
+3. Anything else is treated as a built-in template ID, such as `saas-mvp`.
+
+### Re-initialization
+
+A non-interactive run refuses to overwrite an existing workflow unless `--force` is passed:
+
+```bash
+npx build-with-ai init -y --force --template saas-mvp --name "My App"
+```
+
+Nothing is written until the template loads and every value validates, so a failed re-init leaves
+the existing `.buildwithai/` state untouched.
+
+### Exit codes
+
+| Code | Meaning |
+| :---: | :--- |
+| `0` | Project initialized. |
+| `1` | Missing or invalid values, unknown template, failed template download, or a blocked re-init. |
+
+An interactive terminal still gets the original wizard: supplied flags prefill the matching
+prompts, and omitted values are asked. If stdin is not a terminal and only *some* flags are passed,
+the command fails with the list of missing flags instead of waiting for input.
+
+### CI example
+
+```yaml
+- name: Initialize build-with-ai
+  run: npx build-with-ai init -y --template web-app --name "${{ github.event.repository.name }}"
+```
 
 ---
 
@@ -157,7 +243,8 @@ Custom templates are persisted to `.buildwithai/template.json` and work fully of
 | Command | Description |
 | :--- | :--- |
 | `npx build-with-ai` | Interactive launcher. Shows progress or initiates setup wizard. |
-| `npx build-with-ai init` | Start interactive setup (template, experience, overview). |
+| `npx build-with-ai init` | Initialize a project: interactive wizard, or flags plus `--yes` for headless runs. |
+| `npx build-with-ai init -y --force` | Re-initialize non-interactively, replacing existing state. |
 | `npx build-with-ai next` | Generate and copy the current step prompt to the clipboard. |
 | `npx build-with-ai next --run` | BYOK autonomous mode: send prompt directly to AI provider. |
 | `npx build-with-ai done` | Record step decisions, archive step logs, and advance to next step. |
@@ -206,6 +293,20 @@ npx build-with-ai next --run --provider ollama
 ```
 
 Supported providers: `openai`, `anthropic`, `gemini`, `deepseek`, `groq`, `together`, `ollama`.
+
+#### Token Budget Warnings
+
+Before sending a step, `next --run` estimates the prompt size (about 4 characters per token, counting the step prompt and the system prompt) and compares it with the model's context window. At 75% of the window it logs an advisory warning, and past 100% it warns that the model may truncate or reject the prompt. The run is never blocked.
+
+```bash
+# See the estimate without running anything (tokenBudget field)
+npx build-with-ai next --json
+
+# Tell build-with-ai the real window when the built-in estimate is wrong
+npx build-with-ai next --run --provider ollama --context-window 32768
+```
+
+Context windows come from a conservative built-in table of known models, with a default per provider. Ollama always assumes 8192 tokens, because its OpenAI-compatible endpoint is limited by the server's `num_ctx` setting rather than the model's full window. Override the window with `--context-window`, the `<PROVIDER>_CONTEXT_WINDOW` environment variable (for example `OLLAMA_CONTEXT_WINDOW=32768`), or the same key in `.buildwithai/.env`. Providers whose hosted models vary (`groq`, `together`, `jev`) report an unknown window and skip the warning unless the model is recognized or overridden.
 
 ### Model Context Protocol (MCP)
 
