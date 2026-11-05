@@ -736,7 +736,7 @@ async function executeFullE2ETest() {
         const timer = setTimeout(() => reject(new Error(`ui did not start:\n${uiOutput}`)), 10000);
         uiProcess.stdout.on('data', (chunk) => {
           uiOutput += chunk.toString();
-          const match = uiOutput.match(/http:\/\/localhost:\d+/);
+          const match = uiOutput.match(/http:\/\/127\.0\.0\.1:\d+/);
           if (match) {
             clearTimeout(timer);
             resolve(match[0]);

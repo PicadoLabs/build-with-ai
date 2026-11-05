@@ -243,7 +243,7 @@ npx build-with-ai ui
 npx build-with-ai ui --port 4000 --no-open
 ```
 
-The dashboard is served by Node's built-in `http` module at `http://localhost:3721` and shows:
+The dashboard is served by Node's built-in `http` module at `http://127.0.0.1:3721` and shows:
 - A progress bar and a workflow phase tree with completed, current, and pending steps
 - A decision explorer with search and phase filters
 - A history viewer for archived `history/step-XX.md` responses
