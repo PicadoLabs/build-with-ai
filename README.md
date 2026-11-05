@@ -337,7 +337,7 @@ Exposed tools: `get_workflow_status`, `get_active_prompt`, `complete_step`, and 
 If your editor supports MCP sampling, build-with-ai can generate a step with the editor's own model, so no API key is needed. When the client declares the `sampling` capability, the server also lists an `execute_step_sampled` tool that:
 
 1. Sends the current step prompt to the editor through `sampling/createMessage`, with the step's recommended models as hints.
-2. Applies the reply the same way as `next --run`: writes file blocks inside the project (unsafe paths are skipped), records the `decisions` block, saves history, and advances the step.
+2. Applies the reply the same way as `next --run`: writes file blocks inside the project (unsafe paths, truncated blocks and files that fail the syntax check are skipped and reported), records the `decisions` block under `decisions.`, saves history, and advances the step.
 3. Saves an undo snapshot first, so `npx build-with-ai undo` rolls the step back.
 
 Pass `{ "dryRun": true }` to preview the proposed files and decisions without changing anything, or `maxTokens` to cap the reply length. Editors usually ask you to approve each sampling request; build-with-ai waits up to 5 minutes, configurable with `BUILD_WITH_AI_SAMPLING_TIMEOUT_MS`. Clients without sampling support do not see the tool and can keep using `get_active_prompt` and `complete_step`.
