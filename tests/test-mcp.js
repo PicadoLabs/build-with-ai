@@ -264,6 +264,49 @@ async function testSampledStep() {
   }
 }
 
+async function testWriteGuards() {
+  console.log('\n▶ Test: execute_step_sampled applies the next --run write guards');
+  const guardedReply = [
+    '```src/bad.js',
+    'function ( {',
+    '```',
+    '```src/fine.js',
+    'module.exports = 1;',
+    '```',
+    '```decisions',
+    '{ "framework": "Express" }',
+    '```',
+    '```src/cut.js',
+    'const partial = 1;'
+  ].join('\n');
+  const dir = createProject();
+  try {
+    const host = await startHost(dir, { onSample: () => textResult(guardedReply) });
+    const preview = JSON.parse((await host.callTool({ dryRun: true })).content[0].text);
+    assert.deepStrictEqual(preview.skippedTruncatedPaths, ['src/cut.js'], 'Dry runs report truncated blocks');
+
+    const result = await host.callTool();
+    assert.ok(!result.isError, result.content[0].text);
+    const summary = JSON.parse(result.content[0].text);
+    assert.deepStrictEqual(
+      summary.filesWritten.map((file) => file.path),
+      ['src/fine.js']
+    );
+    assert.deepStrictEqual(summary.skippedTruncatedPaths, ['src/cut.js']);
+    assert.strictEqual(summary.skippedInvalidFiles.length, 1);
+    assert.strictEqual(summary.skippedInvalidFiles[0].path, 'src/bad.js');
+    assert.match(summary.skippedInvalidFiles[0].reason, /invalid syntax/);
+    assert.ok(!fs.existsSync(path.join(dir, 'src', 'bad.js')), 'Invalid syntax is never written over MCP');
+    assert.ok(!fs.existsSync(path.join(dir, 'src', 'cut.js')), 'Truncated blocks are never written over MCP');
+    assert.deepStrictEqual(summary.recordedDecisions, ['decisions.framework'], 'Decisions are namespaced');
+    assert.strictEqual(loadContext(dir).decisions.framework, 'Express');
+    await host.close();
+    console.log('  ✔ Truncated blocks, invalid syntax and decision namespacing match next --run.');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function testDryRunAndValidation() {
   console.log('\n▶ Test: execute_step_sampled dry run and argument validation');
   const dir = createProject();
@@ -401,6 +444,7 @@ async function runTests() {
   await testParseSamplingResult();
   await testCapabilityNegotiation();
   await testSampledStep();
+  await testWriteGuards();
   await testDryRunAndValidation();
   await testFailures();
   completed = true;
