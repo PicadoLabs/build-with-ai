@@ -913,11 +913,16 @@ program
 
       // Full AI response
       if (recordChoice === 'full' || recordChoice === 'both') {
-        // Multi-line-safe editor when the clipboard read failed: pasting large
-        // AI responses into single-line terminal prompts can truncate text.
+        // Multi-line paste safety (#187): Inquirer's single-line `input`
+        // prompt captures only the first line of a pasted multi-line
+        // response and spills the rest into the shell. On an interactive
+        // terminal, open the `editor` prompt instead so the whole paste
+        // is captured. Piped (non-TTY) input keeps `input` so scripted
+        // and e2e flows are unaffected.
+        const fullResponseType = useClipboard || process.stdin.isTTY ? 'editor' : 'input';
         const { fullResponse } = await safePrompt([
           {
-            type: useClipboard ? 'editor' : 'input',
+            type: fullResponseType,
             name: 'fullResponse',
             message: 'Paste or enter the AI response (summary or key notes):',
             default: ''
