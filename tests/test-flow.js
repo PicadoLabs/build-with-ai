@@ -56,7 +56,7 @@ const {
   RULES_BLOCK_END
 } = require('../lib/rules');
 
-const { copyToClipboard, readFromClipboard } = require('../lib/clipboard');
+const { copyToClipboard, copyOsc52, readFromClipboard } = require('../lib/clipboard');
 
 const { parseDecisions } = require('../lib/decisionParser');
 
@@ -909,8 +909,38 @@ async function runTests() {
   );
   console.log('  ✔ Clipboard reading falls back to null and returns text when available.');
 
-  // Test 4c: Heuristic decision parsing for `done --from-clipboard`
-  console.log('\n▶ Test 4c: Heuristic decision parsing');
+  // Test 4c: OSC 52 clipboard fallback for remote/headless sessions (#199)
+  console.log('\n▶ Test 4c: OSC 52 Clipboard Fallback');
+  const oscWrites = [];
+  const fakeTty = {
+    isTTY: true,
+    write: (chunk) => {
+      oscWrites.push(chunk);
+      return true;
+    }
+  };
+  assert.strictEqual(copyOsc52('fallback test', fakeTty), true, 'OSC 52 must write on a TTY stream');
+  assert.strictEqual(oscWrites.length, 1, 'OSC 52 must write exactly one sequence');
+  assert.strictEqual(
+    oscWrites[0],
+    `\x1b]52;c;${Buffer.from('fallback test', 'utf8').toString('base64')}\x07`,
+    'OSC 52 sequence must carry the base64 payload with the c selector and BEL terminator'
+  );
+  assert.strictEqual(
+    copyOsc52('fallback test', { isTTY: false, write: () => true }),
+    false,
+    'OSC 52 must not write when the stream is not a TTY'
+  );
+  // A clipboardy failure in a remote session must fall through to OSC 52
+  // instead of crashing; without a TTY the copy still resolves to false.
+  const throwingClipboard = await runIsolatedClipboardFallback(
+    'module.exports = { writeSync: () => { throw new Error("no X server"); } };\n'
+  );
+  assert.strictEqual(throwingClipboard, false, 'Throwing clipboardy must resolve to false without a TTY');
+  console.log('  ✔ OSC 52 fallback writes the base64 sequence on a TTY and stays silent otherwise.');
+
+  // Test 4d: Heuristic decision parsing for `done --from-clipboard`
+  console.log('\n▶ Test 4d: Heuristic decision parsing');
   const decisionText = [
     '# Tech Stack Recommendation',
     '',
