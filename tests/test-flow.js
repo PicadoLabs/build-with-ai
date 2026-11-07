@@ -2640,6 +2640,7 @@ async function runTests() {
     PROVIDERS,
     resolveProviderConfig,
     chatCompletion,
+    runArchitectCoderPipeline,
     parseFileBlocks,
     findTruncatedFileBlocks,
     validateBlockContent,
@@ -2650,6 +2651,125 @@ async function runTests() {
     buildRunSystemPrompt,
     loadDotEnv
   } = require('../lib/aiClient');
+
+  console.log('\n▶ Test: Multi-agent pipeline');
+
+  const pipelineProviderConfig = resolveProviderConfig({
+    provider: 'openai',
+    apiKey: 'test-key'
+  });
+
+  const pipelineTarget = `pipeline-test-${process.pid}.js`;
+  const architectureResponse = JSON.stringify({
+    contextValid: true,
+    contextErrors: [],
+    dataContracts: [{ name: 'Example', fields: [] }],
+    targetFiles: [pipelineTarget],
+    implementationPlan: ['Create the example file']
+  });
+
+  const coderResponse = [`\`\`\`${pipelineTarget}`, "console.log('pipeline test');", '```'].join('\n');
+
+  const createPipelineFetch = (responses) => {
+    let callIndex = 0;
+
+    return async () => {
+      const content = responses[callIndex++];
+
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            choices: [{ message: { content } }]
+          })
+      };
+    };
+  };
+
+  const pipelineArgs = {
+    providerConfig: pipelineProviderConfig,
+    resolvedPrompt: 'Create a simple example JavaScript file.',
+    stepNum: 1,
+    totalSteps: 1,
+    targetFiles: [pipelineTarget],
+    context: {}
+  };
+
+  const successfulPipeline = await runArchitectCoderPipeline({
+    ...pipelineArgs,
+    fetchImpl: createPipelineFetch([
+      architectureResponse,
+      coderResponse,
+      JSON.stringify({ approved: true, issues: [] })
+    ])
+  });
+
+  assert.strictEqual(successfulPipeline.review.approved, true);
+  assert.strictEqual(successfulPipeline.coderResponse, coderResponse);
+  assert.strictEqual(fs.existsSync(path.join(process.cwd(), pipelineTarget)), false);
+  console.log('  ✔ Architect → Coder → Reviewer succeeds without writing files.');
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      fetchImpl: createPipelineFetch([
+        architectureResponse,
+        coderResponse,
+        JSON.stringify({
+          approved: false,
+          issues: ['Exposed secret detected']
+        })
+      ])
+    }),
+    /Reviewer rejected/
+  );
+
+  assert.strictEqual(fs.existsSync(path.join(process.cwd(), pipelineTarget)), false);
+  console.log('  ✔ Reviewer rejection prevents successful pipeline completion.');
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      fetchImpl: createPipelineFetch(['Invalid JSON'])
+    }),
+    /Architect output is invalid JSON/
+  );
+
+  let invalidContextFetchCalled = false;
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      context: { project: null },
+      fetchImpl: async () => {
+        invalidContextFetchCalled = true;
+        throw new Error('AI provider should not be called');
+      }
+    }),
+    /Invalid context\.json: project must be an object/
+  );
+
+  assert.strictEqual(invalidContextFetchCalled, false);
+  console.log('  ✔ Invalid context is rejected before AI execution.');
+  console.log('  ✔ Invalid Architect output is rejected.');
+
+  let unsafePathFetchCalled = false;
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      targetFiles: ['../outside.js'],
+      fetchImpl: async () => {
+        unsafePathFetchCalled = true;
+        throw new Error('AI provider should not be called');
+      }
+    }),
+    /Unsafe declared target file/
+  );
+
+  assert.strictEqual(unsafePathFetchCalled, false);
+  console.log('  ✔ Unsafe target paths are rejected before AI execution.');
 
   assert.deepStrictEqual(
     Object.keys(PROVIDERS).sort(),

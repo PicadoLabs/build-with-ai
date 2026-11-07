@@ -163,6 +163,7 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
   const {
     resolveProviderConfig,
     chatCompletion,
+    runArchitectCoderPipeline,
     parseFileBlocks,
     findTruncatedFileBlocks,
     parseDecisionsBlock,
@@ -224,10 +225,32 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
 
   let response;
   try {
-    response = await chatCompletion(providerConfig, [
-      { role: 'system', content: system },
-      { role: 'user', content: resolvedPrompt }
-    ]);
+    if (options.pipeline) {
+      const requestedPipeline = options.pipeline.split(',').map((agent) => agent.trim().toLowerCase());
+
+      if (requestedPipeline.join(',') !== 'architect,coder,reviewer') {
+        throw new Error('Invalid pipeline. Use --pipeline architect,coder,reviewer');
+      }
+
+      logger.info('Running Architect → Coder → Reviewer pipeline...');
+
+      const pipelineResult = await runArchitectCoderPipeline({
+        providerConfig,
+        resolvedPrompt,
+        stepNum: currentStepNum,
+        totalSteps,
+        targetFiles,
+        context
+      });
+
+      // Use only the Coder response returned after Reviewer approval.
+      response = pipelineResult.coderResponse;
+    } else {
+      response = await chatCompletion(providerConfig, [
+        { role: 'system', content: system },
+        { role: 'user', content: resolvedPrompt }
+      ]);
+    }
   } catch (err) {
     logger.error(`AI request failed: ${err.message}`);
     process.exit(1);
@@ -735,6 +758,7 @@ program
   )
   .option('--review', 'With --run: show a colored diff of the proposed file changes and confirm before applying')
   .option('--force', 'With --run: write file blocks even when syntax validation fails')
+  .option('--pipeline <agents>', 'Run a multi-agent pipeline: architect,coder,reviewer')
   .action(async (options) => {
     await runNextCommand(options);
   });
