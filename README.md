@@ -333,6 +333,10 @@ Add to your editor configuration (`.cursor/mcp.json` or `claude_desktop_config.j
 
 Exposed tools: `get_workflow_status`, `get_active_prompt`, `complete_step`, and `get_context`. Steps completed via MCP automatically create safe rollback snapshots.
 
+Exposed prompts: `build-with-ai` (the current step, available as `/build-with-ai` in editors that support MCP prompts) and `step-1` through `step-N` for every step in the template.
+
+Exposed resources: `buildwithai://context`, the project's `context.json` (tech stack and recorded decisions), which editors can attach to the agent's context window.
+
 ### Local Browser Dashboard
 
 For larger templates, inspect the whole project in your browser instead of the terminal:

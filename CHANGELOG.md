@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Non-Interactive Project Initialization:** `init` accepts `--yes/-y`, `--name`, `--level`, and `--idea`, enabling zero-prompt setup in CI, Docker, devcontainers, and coding agents. `--yes` fills missing values from documented defaults (`web-app`, current directory name, `Intermediate`, and a generic project idea), and stdin is never read.
 - **Built-in Template Selection via `--template`:** `--template` now accepts a built-in template ID (for example `--template saas-mvp`) alongside local file paths and HTTP(S) URLs.
+- **MCP Prompts and Resources:** the MCP server now implements `prompts/list`, `prompts/get`, `resources/list`, and `resources/read`. Workflow steps are exposed as prompts (`build-with-ai` for the current step, `step-N` for each step), and `context.json` is exposed as the `buildwithai://context` resource. The `initialize` response advertises the `prompts` and `resources` capabilities.
 - **Headless Re-Initialization Guard:** a non-interactive re-init exits 1 with a `--force` hint instead of overwriting an existing workflow. `--force` replaces state only after the template loads and every value validates.
 
 ### Changed
