@@ -1244,14 +1244,14 @@ program
 // ─────────────────────────────────────────────────
 program
   .command('export')
-  .description('Export README.md, BUILD_LOG.md, and .buildwithai/CONTEXT.md (or editor rule files with --rules).')
+  .description('Export project, architecture, and agent documentation (or editor rule files with --rules).')
   .option(
     '--rules',
     'Sync editor rule files (.cursorrules, .cursor/rules/project-decisions.mdc, .windsurfrules, CLAUDE.md, .github/copilot-instructions.md) from context.json'
   )
   .option('--dry-run', 'Show which files would be generated without writing them')
   .option('-o, --out-dir <path>', 'Write documentation to a custom output directory')
-  .option('-f, --force', 'Overwrite an existing README.md')
+  .option('-f, --force', 'Overwrite existing README.md, ARCHITECTURE.md, and AGENTS.md')
   .action(async (options) => {
     await runExportCommand(options);
   });

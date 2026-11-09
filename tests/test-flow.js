@@ -45,7 +45,13 @@ const { getByPath, setByPath, flattenObject } = require('../lib/contextBuilder')
 
 const { parseEditorValue, formatEditorValue, summarizeValue, runConfigEditor } = require('../lib/configEditor');
 
-const { runExport, generateReadme, resolveReadmePath } = require('../lib/export');
+const {
+  runExport,
+  generateReadme,
+  generateArchitecture,
+  generateAgentInstructions,
+  resolveReadmePath
+} = require('../lib/export');
 
 const {
   runRulesExport,
@@ -1590,14 +1596,16 @@ async function runTests() {
   saveState(state, tempDir);
 
   // Test 10: Export Documentation
-  console.log('\n▶ Test 10: Export (README.md, BUILD_LOG.md, CONTEXT.md)');
+  console.log('\n▶ Test 10: Export (README.md, BUILD_LOG.md, CONTEXT.md, ARCHITECTURE.md, AGENTS.md)');
   const exportedPaths = await runExport(tempDir);
   assert.deepStrictEqual(
     exportedPaths,
     [
       path.join(tempDir, 'README.md'),
       path.join(tempDir, 'BUILD_LOG.md'),
-      path.join(tempDir, '.buildwithai', 'CONTEXT.md')
+      path.join(tempDir, '.buildwithai', 'CONTEXT.md'),
+      path.join(tempDir, 'ARCHITECTURE.md'),
+      path.join(tempDir, 'AGENTS.md')
     ],
     'runExport must return the written file paths'
   );
@@ -1605,6 +1613,8 @@ async function runTests() {
   assert(fs.existsSync(path.join(tempDir, 'README.md')), 'README.md must be generated');
   assert(fs.existsSync(path.join(tempDir, 'BUILD_LOG.md')), 'BUILD_LOG.md must be generated');
   assert(fs.existsSync(path.join(tempDir, '.buildwithai', 'CONTEXT.md')), 'CONTEXT.md must be generated');
+  assert(fs.existsSync(path.join(tempDir, 'ARCHITECTURE.md')), 'ARCHITECTURE.md must be generated');
+  assert(fs.existsSync(path.join(tempDir, 'AGENTS.md')), 'AGENTS.md must be generated');
 
   const readmeContent = fs.readFileSync(path.join(tempDir, 'README.md'), 'utf8');
   assert(readmeContent.includes('Expense Tracker'), 'README must contain project name');
@@ -1616,7 +1626,43 @@ async function runTests() {
 
   const contextMdContent = fs.readFileSync(path.join(tempDir, '.buildwithai', 'CONTEXT.md'), 'utf8');
   assert(contextMdContent.includes('Project Context & Architecture Decisions'), 'CONTEXT.md header check');
+  const architectureContent = fs.readFileSync(path.join(tempDir, 'ARCHITECTURE.md'), 'utf8');
+  assert(architectureContent.includes('PostgreSQL with Prisma'), 'ARCHITECTURE.md includes saved database decision');
+  const agentsContent = fs.readFileSync(path.join(tempDir, 'AGENTS.md'), 'utf8');
+  assert(agentsContent.includes('## Testing commands'), 'AGENTS.md includes testing instructions');
+  assert(agentsContent.includes('## Restricted paths'), 'AGENTS.md includes path restrictions');
   console.log('  ✔ All export files generated with deterministic content.');
+
+  const architectureExample = generateArchitecture(
+    { projectName: 'Architecture Demo' },
+    {
+      project: { idea: 'A small inventory service.' },
+      decisions: {
+        frontendStack: 'React',
+        backendStack: 'Express',
+        database: 'PostgreSQL',
+        dataModels: ['Product', 'Warehouse'],
+        serviceBoundaries: ['API service', 'Inventory worker']
+      }
+    }
+  );
+  assert(architectureExample.includes('Product'), 'Architecture includes recorded data models');
+  assert(architectureExample.includes('Inventory worker'), 'Architecture includes recorded service boundaries');
+
+  const agentExample = generateAgentInstructions(
+    { projectName: 'Agent Demo' },
+    {
+      decisions: {
+        testCommand: 'npm test',
+        lintCommand: 'npm run lint',
+        codingStyle: 'Use two-space indentation.',
+        disallowedPaths: ['.env', 'secrets/']
+      }
+    }
+  );
+  assert(agentExample.includes('npm test'), 'Agent instructions include recorded test commands');
+  assert(agentExample.includes('Use two-space indentation.'), 'Agent instructions include recorded coding style');
+  assert(agentExample.includes('secrets/'), 'Agent instructions include recorded restricted paths');
 
   // Test 10b: Existing README preservation and explicit overwrite
   const generatedReadme = fs.readFileSync(path.join(tempDir, 'README.md'), 'utf8');
@@ -1639,6 +1685,23 @@ async function runTests() {
     'Force export must overwrite README.md explicitly'
   );
   console.log('  ✔ Existing README.md is preserved unless --force is used.');
+
+  // Test 10b.1: user-authored architecture and agent instructions must survive a normal export.
+  fs.writeFileSync(path.join(tempDir, 'ARCHITECTURE.md'), 'My architecture notes', 'utf8');
+  fs.writeFileSync(path.join(tempDir, 'AGENTS.md'), 'My agent instructions', 'utf8');
+  const preservedPaths = await runExport(tempDir, { interactive: false });
+  assert(!preservedPaths.includes(path.join(tempDir, 'ARCHITECTURE.md')));
+  assert(!preservedPaths.includes(path.join(tempDir, 'AGENTS.md')));
+  assert.strictEqual(fs.readFileSync(path.join(tempDir, 'ARCHITECTURE.md'), 'utf8'), 'My architecture notes');
+  assert.strictEqual(fs.readFileSync(path.join(tempDir, 'AGENTS.md'), 'utf8'), 'My agent instructions');
+  await runExport(tempDir, { force: true });
+  assert.notStrictEqual(fs.readFileSync(path.join(tempDir, 'ARCHITECTURE.md'), 'utf8'), 'My architecture notes');
+  assert.notStrictEqual(fs.readFileSync(path.join(tempDir, 'AGENTS.md'), 'utf8'), 'My agent instructions');
+
+  await runExport(tempDir, { outDir: 'export-preview', interactive: false });
+  assert(fs.existsSync(path.join(tempDir, 'export-preview', 'ARCHITECTURE.md')));
+  assert(fs.existsSync(path.join(tempDir, 'export-preview', 'AGENTS.md')));
+  console.log('  ✔ User-authored documents are preserved, --force overwrites, and custom export folders work.');
 
   const promptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-export-prompt-'));
   try {
