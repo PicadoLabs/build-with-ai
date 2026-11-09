@@ -34,6 +34,7 @@ const {
   safePrompt
 } = require('../lib/ui');
 const { runInit } = require('../lib/init');
+const { runValidate } = require('../lib/validate');
 const { runResume } = require('../lib/resume');
 const { runExport } = require('../lib/export');
 const { runRulesExport } = require('../lib/rules');
@@ -150,6 +151,14 @@ program
       if (!isInitialized()) return;
       if ((await runRulesExport(process.cwd(), {})) === false) process.exitCode = 1;
     }
+  });
+
+program
+  .command('validate')
+  .description('Validate the project context and template without changing any files.')
+  .option('-t, --template <path>', 'Validate a local template JSON file')
+  .action((options) => {
+    if (!runValidate(options)) process.exitCode = 1;
   });
 
 // ─────────────────────────────────────────────────
