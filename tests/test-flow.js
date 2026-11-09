@@ -56,7 +56,7 @@ const {
   RULES_BLOCK_END
 } = require('../lib/rules');
 
-const { copyToClipboard, readFromClipboard } = require('../lib/clipboard');
+const { copyToClipboard, copyOsc52, readFromClipboard } = require('../lib/clipboard');
 
 const { parseDecisions } = require('../lib/decisionParser');
 
@@ -909,8 +909,38 @@ async function runTests() {
   );
   console.log('  ✔ Clipboard reading falls back to null and returns text when available.');
 
-  // Test 4c: Heuristic decision parsing for `done --from-clipboard`
-  console.log('\n▶ Test 4c: Heuristic decision parsing');
+  // Test 4c: OSC 52 clipboard fallback for remote/headless sessions (#199)
+  console.log('\n▶ Test 4c: OSC 52 Clipboard Fallback');
+  const oscWrites = [];
+  const fakeTty = {
+    isTTY: true,
+    write: (chunk) => {
+      oscWrites.push(chunk);
+      return true;
+    }
+  };
+  assert.strictEqual(copyOsc52('fallback test', fakeTty), true, 'OSC 52 must write on a TTY stream');
+  assert.strictEqual(oscWrites.length, 1, 'OSC 52 must write exactly one sequence');
+  assert.strictEqual(
+    oscWrites[0],
+    `\x1b]52;c;${Buffer.from('fallback test', 'utf8').toString('base64')}\x07`,
+    'OSC 52 sequence must carry the base64 payload with the c selector and BEL terminator'
+  );
+  assert.strictEqual(
+    copyOsc52('fallback test', { isTTY: false, write: () => true }),
+    false,
+    'OSC 52 must not write when the stream is not a TTY'
+  );
+  // A clipboardy failure in a remote session must fall through to OSC 52
+  // instead of crashing; without a TTY the copy still resolves to false.
+  const throwingClipboard = await runIsolatedClipboardFallback(
+    'module.exports = { writeSync: () => { throw new Error("no X server"); } };\n'
+  );
+  assert.strictEqual(throwingClipboard, false, 'Throwing clipboardy must resolve to false without a TTY');
+  console.log('  ✔ OSC 52 fallback writes the base64 sequence on a TTY and stays silent otherwise.');
+
+  // Test 4d: Heuristic decision parsing for `done --from-clipboard`
+  console.log('\n▶ Test 4d: Heuristic decision parsing');
   const decisionText = [
     '# Tech Stack Recommendation',
     '',
@@ -2640,6 +2670,7 @@ async function runTests() {
     PROVIDERS,
     resolveProviderConfig,
     chatCompletion,
+    runArchitectCoderPipeline,
     parseFileBlocks,
     findTruncatedFileBlocks,
     validateBlockContent,
@@ -2650,6 +2681,125 @@ async function runTests() {
     buildRunSystemPrompt,
     loadDotEnv
   } = require('../lib/aiClient');
+
+  console.log('\n▶ Test: Multi-agent pipeline');
+
+  const pipelineProviderConfig = resolveProviderConfig({
+    provider: 'openai',
+    apiKey: 'test-key'
+  });
+
+  const pipelineTarget = `pipeline-test-${process.pid}.js`;
+  const architectureResponse = JSON.stringify({
+    contextValid: true,
+    contextErrors: [],
+    dataContracts: [{ name: 'Example', fields: [] }],
+    targetFiles: [pipelineTarget],
+    implementationPlan: ['Create the example file']
+  });
+
+  const coderResponse = [`\`\`\`${pipelineTarget}`, "console.log('pipeline test');", '```'].join('\n');
+
+  const createPipelineFetch = (responses) => {
+    let callIndex = 0;
+
+    return async () => {
+      const content = responses[callIndex++];
+
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            choices: [{ message: { content } }]
+          })
+      };
+    };
+  };
+
+  const pipelineArgs = {
+    providerConfig: pipelineProviderConfig,
+    resolvedPrompt: 'Create a simple example JavaScript file.',
+    stepNum: 1,
+    totalSteps: 1,
+    targetFiles: [pipelineTarget],
+    context: {}
+  };
+
+  const successfulPipeline = await runArchitectCoderPipeline({
+    ...pipelineArgs,
+    fetchImpl: createPipelineFetch([
+      architectureResponse,
+      coderResponse,
+      JSON.stringify({ approved: true, issues: [] })
+    ])
+  });
+
+  assert.strictEqual(successfulPipeline.review.approved, true);
+  assert.strictEqual(successfulPipeline.coderResponse, coderResponse);
+  assert.strictEqual(fs.existsSync(path.join(process.cwd(), pipelineTarget)), false);
+  console.log('  ✔ Architect → Coder → Reviewer succeeds without writing files.');
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      fetchImpl: createPipelineFetch([
+        architectureResponse,
+        coderResponse,
+        JSON.stringify({
+          approved: false,
+          issues: ['Exposed secret detected']
+        })
+      ])
+    }),
+    /Reviewer rejected/
+  );
+
+  assert.strictEqual(fs.existsSync(path.join(process.cwd(), pipelineTarget)), false);
+  console.log('  ✔ Reviewer rejection prevents successful pipeline completion.');
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      fetchImpl: createPipelineFetch(['Invalid JSON'])
+    }),
+    /Architect output is invalid JSON/
+  );
+
+  let invalidContextFetchCalled = false;
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      context: { project: null },
+      fetchImpl: async () => {
+        invalidContextFetchCalled = true;
+        throw new Error('AI provider should not be called');
+      }
+    }),
+    /Invalid context\.json: project must be an object/
+  );
+
+  assert.strictEqual(invalidContextFetchCalled, false);
+  console.log('  ✔ Invalid context is rejected before AI execution.');
+  console.log('  ✔ Invalid Architect output is rejected.');
+
+  let unsafePathFetchCalled = false;
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      targetFiles: ['../outside.js'],
+      fetchImpl: async () => {
+        unsafePathFetchCalled = true;
+        throw new Error('AI provider should not be called');
+      }
+    }),
+    /Unsafe declared target file/
+  );
+
+  assert.strictEqual(unsafePathFetchCalled, false);
+  console.log('  ✔ Unsafe target paths are rejected before AI execution.');
 
   assert.deepStrictEqual(
     Object.keys(PROVIDERS).sort(),
@@ -3300,6 +3450,143 @@ async function runTests() {
     fs.rmSync(initDir, { recursive: true, force: true });
   }
   console.log('  ✔ initState gitignores .buildwithai/.env.');
+
+  // Shared step runner used by next --run and the MCP execute_step_sampled tool
+  const { planStepResponse, applyStepResponse } = require('../lib/stepRunner');
+  const runnerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-runner-'));
+  try {
+    initState(
+      {
+        projectName: 'Runner Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Beginner',
+        projectIdea: 'Demo.',
+        totalSteps: 3
+      },
+      runnerDir
+    );
+    const runnerReply = [
+      'Done.',
+      '```src/index.js',
+      'module.exports = 1;',
+      '```',
+      '```../outside.js',
+      'nope',
+      '```',
+      '```.git/hooks/pre-commit',
+      'nope',
+      '```',
+      '```decisions',
+      '{ "decisions.database": "SQLite", "decisions.__proto__.x": 1 }',
+      '```'
+    ].join('\n');
+
+    const plan = planStepResponse(runnerDir, runnerReply, []);
+    assert.deepStrictEqual(
+      plan.applicable.map((entry) => entry.block.path),
+      ['src/index.js']
+    );
+    assert.deepStrictEqual(plan.unsafe, ['../outside.js', '.git/hooks/pre-commit']);
+    assert.deepStrictEqual(Object.keys(plan.decisions), ['decisions.database', 'decisions.__proto__.x']);
+    assert.strictEqual(plan.decisionsError, null);
+    assert.ok(!fs.existsSync(path.join(runnerDir, 'src')), 'Planning never writes files');
+
+    const runnerState = loadState(runnerDir);
+    const runnerContext = loadContext(runnerDir);
+    const applied = applyStepResponse({
+      cwd: runnerDir,
+      state: runnerState,
+      context: runnerContext,
+      stepNum: 1,
+      response: runnerReply,
+      plan
+    });
+    assert.deepStrictEqual(applied.files, [{ path: 'src/index.js', created: true, validationError: null }]);
+    assert.deepStrictEqual(applied.recorded, ['decisions.database'], 'Reserved decision keys are ignored');
+    assert.strictEqual(applied.nextStep, 2);
+    assert.strictEqual(fs.readFileSync(path.join(runnerDir, 'src', 'index.js'), 'utf8'), 'module.exports = 1;');
+    assert.ok(!fs.existsSync(path.join(runnerDir, '..', 'outside.js')), 'Unsafe paths are never written');
+    assert.strictEqual(loadContext(runnerDir).decisions.database, 'SQLite');
+    assert.deepStrictEqual(loadState(runnerDir).completedSteps, [1]);
+    assert.strictEqual(loadHistory(1, runnerDir), runnerReply);
+
+    const discardPlan = planStepResponse(runnerDir, '```src/other.js\nx\n```\n```decisions\n{ broken\n```', []);
+    assert.ok(discardPlan.decisionsError.includes('Could not parse'), 'Broken decisions JSON is reported, not thrown');
+    const discarded = applyStepResponse({
+      cwd: runnerDir,
+      state: loadState(runnerDir),
+      context: loadContext(runnerDir),
+      stepNum: 2,
+      response: 'step two',
+      plan: discardPlan,
+      writeFiles: false
+    });
+    assert.deepStrictEqual(discarded.files, [], 'writeFiles=false discards file blocks');
+    assert.ok(!fs.existsSync(path.join(runnerDir, 'src', 'other.js')));
+    assert.strictEqual(discarded.nextStep, 3, 'A discarded step still advances, like next --run');
+
+    // Upstream write rules now applied by the shared runner (#213, #226)
+    const guardedReply = [
+      '```src/bad.js',
+      'function ( {',
+      '```',
+      '```src/fine.js',
+      'module.exports = 3;',
+      '```',
+      '```decisions',
+      '{ "framework": "Express", "decisions.cache": "Redis" }',
+      '```',
+      '```src/cut.js',
+      'const partial = 1;'
+    ].join('\n');
+    const guardedPlan = planStepResponse(runnerDir, guardedReply, []);
+    assert.deepStrictEqual(guardedPlan.truncated, ['src/cut.js'], 'Unclosed blocks are reported as truncated');
+    assert.ok(
+      !guardedPlan.applicable.some((entry) => entry.block.path === 'src/cut.js'),
+      'Truncated blocks are never applicable'
+    );
+    const guarded = applyStepResponse({
+      cwd: runnerDir,
+      state: loadState(runnerDir),
+      context: loadContext(runnerDir),
+      stepNum: 3,
+      response: guardedReply,
+      plan: guardedPlan
+    });
+    assert.deepStrictEqual(
+      guarded.files.map((file) => file.path),
+      ['src/fine.js']
+    );
+    assert.strictEqual(guarded.invalid.length, 1);
+    assert.strictEqual(guarded.invalid[0].path, 'src/bad.js');
+    assert.match(guarded.invalid[0].reason, /invalid syntax.*--force/s);
+    assert.ok(!fs.existsSync(path.join(runnerDir, 'src', 'bad.js')), 'Invalid syntax is not written without force');
+    assert.ok(!fs.existsSync(path.join(runnerDir, 'src', 'cut.js')), 'Truncated blocks are not written');
+    assert.deepStrictEqual(
+      guarded.recorded,
+      ['decisions.framework', 'decisions.cache'],
+      'Decision keys are stored under the decisions namespace'
+    );
+    assert.strictEqual(loadContext(runnerDir).decisions.framework, 'Express');
+
+    const forced = applyStepResponse({
+      cwd: runnerDir,
+      state: loadState(runnerDir),
+      context: loadContext(runnerDir),
+      stepNum: 4,
+      response: guardedReply,
+      plan: planStepResponse(runnerDir, guardedReply, []),
+      force: true
+    });
+    const forcedBad = forced.files.find((file) => file.path === 'src/bad.js');
+    assert.ok(forcedBad, 'force writes blocks that fail the syntax check');
+    assert.ok(forcedBad.validationError, 'Forced writes still report the validation error');
+    assert.deepStrictEqual(forced.invalid, []);
+  } finally {
+    fs.rmSync(runnerDir, { recursive: true, force: true });
+  }
+  console.log('  ✔ Shared step runner plans, applies and advances step responses safely.');
 
   // Custom template workspace persistence (#133): init --template writes
   // .buildwithai/template.json and later commands resolve it from there.
