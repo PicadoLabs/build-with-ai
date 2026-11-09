@@ -2423,7 +2423,7 @@ async function runTests() {
       mcpDir
     );
     assert.strictEqual(initRes.result.protocolVersion, PROTOCOL_VERSION);
-    assert.deepStrictEqual(initRes.result.capabilities, { tools: {} });
+    assert.deepStrictEqual(initRes.result.capabilities, { tools: {}, prompts: {}, resources: {} });
     assert.strictEqual(initRes.result.serverInfo.name, 'build-with-ai');
 
     // Unit: notifications produce no response
@@ -2446,9 +2446,93 @@ async function runTests() {
       );
       assert.strictEqual(uninit.result.isError, true);
       assert(uninit.result.content[0].text.includes('npx build-with-ai init'));
+
+      // Prompts and resources without an initialized project (#198)
+      const uninitPrompts = handleRequest({ jsonrpc: '2.0', id: 2, method: 'prompts/list' }, emptyDir);
+      assert.deepStrictEqual(uninitPrompts.result.prompts, [], 'No project means no prompts');
+      const uninitPromptGet = handleRequest(
+        { jsonrpc: '2.0', id: 3, method: 'prompts/get', params: { name: 'build-with-ai' } },
+        emptyDir
+      );
+      assert.strictEqual(uninitPromptGet.error.code, -32602);
+      assert(uninitPromptGet.error.message.includes('npx build-with-ai init'));
+      const uninitResources = handleRequest({ jsonrpc: '2.0', id: 4, method: 'resources/list' }, emptyDir);
+      assert.deepStrictEqual(uninitResources.result.resources, [], 'No project means no resources');
+      const uninitRead = handleRequest(
+        { jsonrpc: '2.0', id: 5, method: 'resources/read', params: { uri: 'buildwithai://context' } },
+        emptyDir
+      );
+      assert.strictEqual(uninitRead.error.code, -32002);
+      assert(uninitRead.error.message.includes('npx build-with-ai init'));
     } finally {
       fs.rmSync(emptyDir, { recursive: true, force: true });
     }
+
+    // Unit: MCP Prompts (#198)
+    const mcpTemplateSteps = getTemplate('web-app', mcpDir).steps;
+    const promptList = handleRequest({ jsonrpc: '2.0', id: 10, method: 'prompts/list' }, mcpDir);
+    const promptNames = promptList.result.prompts.map((p) => p.name);
+    assert.strictEqual(promptNames.length, mcpTemplateSteps.length + 1, 'One prompt per step plus build-with-ai');
+    assert.strictEqual(promptNames[0], 'build-with-ai');
+    assert.strictEqual(promptNames[1], 'step-1');
+    assert.strictEqual(promptNames[promptNames.length - 1], `step-${mcpTemplateSteps.length}`);
+    for (const prompt of promptList.result.prompts) {
+      assert.strictEqual(typeof prompt.description, 'string');
+    }
+    assert(promptList.result.prompts[1].description.includes(mcpTemplateSteps[0].title));
+
+    const currentPrompt = handleRequest(
+      { jsonrpc: '2.0', id: 11, method: 'prompts/get', params: { name: 'build-with-ai' } },
+      mcpDir
+    );
+    assert.strictEqual(currentPrompt.result.messages.length, 1);
+    assert.strictEqual(currentPrompt.result.messages[0].role, 'user');
+    assert.strictEqual(currentPrompt.result.messages[0].content.type, 'text');
+    assert(currentPrompt.result.messages[0].content.text.includes('MCP Demo'), 'Prompt must be interpolated');
+    assert(currentPrompt.result.description.startsWith('Step 1:'));
+
+    const stepTwoPrompt = handleRequest(
+      { jsonrpc: '2.0', id: 12, method: 'prompts/get', params: { name: 'step-2' } },
+      mcpDir
+    );
+    assert(stepTwoPrompt.result.description.includes(mcpTemplateSteps[1].title));
+    assert(stepTwoPrompt.result.messages[0].content.text.length > 0);
+
+    for (const badName of ['step-0', `step-${mcpTemplateSteps.length + 1}`, 'step-1.5', 'step-abc', 'nope']) {
+      const bad = handleRequest({ jsonrpc: '2.0', id: 13, method: 'prompts/get', params: { name: badName } }, mcpDir);
+      assert.strictEqual(bad.error.code, -32602, `Prompt "${badName}" must be rejected as invalid params`);
+    }
+    const missingName = handleRequest({ jsonrpc: '2.0', id: 14, method: 'prompts/get', params: {} }, mcpDir);
+    assert.strictEqual(missingName.error.code, -32602);
+
+    // Unit: MCP Resources (#198)
+    const resourceList = handleRequest({ jsonrpc: '2.0', id: 20, method: 'resources/list' }, mcpDir);
+    assert.deepStrictEqual(
+      resourceList.result.resources.map((r) => r.uri),
+      ['buildwithai://context']
+    );
+    assert.strictEqual(resourceList.result.resources[0].mimeType, 'application/json');
+
+    const contextBeforeRead = JSON.stringify(loadContext(mcpDir));
+    const resourceRead = handleRequest(
+      { jsonrpc: '2.0', id: 21, method: 'resources/read', params: { uri: 'buildwithai://context' } },
+      mcpDir
+    );
+    assert.strictEqual(resourceRead.result.contents.length, 1);
+    assert.strictEqual(resourceRead.result.contents[0].uri, 'buildwithai://context');
+    assert.strictEqual(resourceRead.result.contents[0].mimeType, 'application/json');
+    assert.deepStrictEqual(JSON.parse(resourceRead.result.contents[0].text), loadContext(mcpDir));
+    assert.strictEqual(JSON.stringify(loadContext(mcpDir)), contextBeforeRead, 'Reading must not modify context');
+    assert.strictEqual(loadState(mcpDir).currentStep, 1, 'Reading prompts/resources must not advance the workflow');
+
+    const unknownResource = handleRequest(
+      { jsonrpc: '2.0', id: 22, method: 'resources/read', params: { uri: 'buildwithai://nope' } },
+      mcpDir
+    );
+    assert.strictEqual(unknownResource.error.code, -32002);
+    const missingUri = handleRequest({ jsonrpc: '2.0', id: 23, method: 'resources/read', params: {} }, mcpDir);
+    assert.strictEqual(missingUri.error.code, -32602);
+    console.log('  ✔ MCP prompts/list, prompts/get, resources/list and resources/read return spec-shaped results.');
 
     // End-to-end over stdio streams: full MCP session
     const input = new PassThrough();
@@ -2481,7 +2565,9 @@ async function runTests() {
         method: 'tools/call',
         params: { name: 'get_context', arguments: { key: 'decisions.database' } }
       },
-      { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'unknown_tool', arguments: {} } }
+      { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'unknown_tool', arguments: {} } },
+      { jsonrpc: '2.0', id: 9, method: 'prompts/get', params: { name: 'build-with-ai' } },
+      { jsonrpc: '2.0', id: 10, method: 'resources/read', params: { uri: 'buildwithai://context' } }
     ];
     for (const message of session) {
       input.write(`${JSON.stringify(message)}\n`);
@@ -2494,8 +2580,8 @@ async function runTests() {
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
-    // 8 request responses + 1 parse-error response; the notification gets none.
-    assert.strictEqual(responses.length, 9, 'Every request except notifications must get exactly one response');
+    // 10 request responses + 1 parse-error response; the notification gets none.
+    assert.strictEqual(responses.length, 11, 'Every request except notifications must get exactly one response');
     const byId = Object.fromEntries(responses.filter((r) => r.id !== null).map((r) => [r.id, r]));
 
     assert.strictEqual(byId[1].result.serverInfo.name, 'build-with-ai');
@@ -2524,6 +2610,15 @@ async function runTests() {
 
     assert.strictEqual(byId[7].result.content[0].text, 'PostgreSQL', 'get_context key lookup works');
     assert.strictEqual(byId[8].result.isError, true, 'Unknown tool must return isError');
+
+    // The current-step prompt follows the workflow, and the context resource
+    // reflects decisions recorded through complete_step (#198).
+    assert(byId[9].result.description.startsWith('Step 2:'), 'build-with-ai prompt must track the current step');
+    assert.strictEqual(
+      JSON.parse(byId[10].result.contents[0].text).decisions.database,
+      'PostgreSQL',
+      'Context resource must include decisions recorded via complete_step'
+    );
 
     const parseError = responses.find((r) => r.id === null);
     assert.strictEqual(parseError.error.code, -32700, 'Malformed JSON must return a Parse error');
