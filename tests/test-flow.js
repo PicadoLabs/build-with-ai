@@ -3451,6 +3451,143 @@ async function runTests() {
   }
   console.log('  ✔ initState gitignores .buildwithai/.env.');
 
+  // Shared step runner used by next --run and the MCP execute_step_sampled tool
+  const { planStepResponse, applyStepResponse } = require('../lib/stepRunner');
+  const runnerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-runner-'));
+  try {
+    initState(
+      {
+        projectName: 'Runner Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Beginner',
+        projectIdea: 'Demo.',
+        totalSteps: 3
+      },
+      runnerDir
+    );
+    const runnerReply = [
+      'Done.',
+      '```src/index.js',
+      'module.exports = 1;',
+      '```',
+      '```../outside.js',
+      'nope',
+      '```',
+      '```.git/hooks/pre-commit',
+      'nope',
+      '```',
+      '```decisions',
+      '{ "decisions.database": "SQLite", "decisions.__proto__.x": 1 }',
+      '```'
+    ].join('\n');
+
+    const plan = planStepResponse(runnerDir, runnerReply, []);
+    assert.deepStrictEqual(
+      plan.applicable.map((entry) => entry.block.path),
+      ['src/index.js']
+    );
+    assert.deepStrictEqual(plan.unsafe, ['../outside.js', '.git/hooks/pre-commit']);
+    assert.deepStrictEqual(Object.keys(plan.decisions), ['decisions.database', 'decisions.__proto__.x']);
+    assert.strictEqual(plan.decisionsError, null);
+    assert.ok(!fs.existsSync(path.join(runnerDir, 'src')), 'Planning never writes files');
+
+    const runnerState = loadState(runnerDir);
+    const runnerContext = loadContext(runnerDir);
+    const applied = applyStepResponse({
+      cwd: runnerDir,
+      state: runnerState,
+      context: runnerContext,
+      stepNum: 1,
+      response: runnerReply,
+      plan
+    });
+    assert.deepStrictEqual(applied.files, [{ path: 'src/index.js', created: true, validationError: null }]);
+    assert.deepStrictEqual(applied.recorded, ['decisions.database'], 'Reserved decision keys are ignored');
+    assert.strictEqual(applied.nextStep, 2);
+    assert.strictEqual(fs.readFileSync(path.join(runnerDir, 'src', 'index.js'), 'utf8'), 'module.exports = 1;');
+    assert.ok(!fs.existsSync(path.join(runnerDir, '..', 'outside.js')), 'Unsafe paths are never written');
+    assert.strictEqual(loadContext(runnerDir).decisions.database, 'SQLite');
+    assert.deepStrictEqual(loadState(runnerDir).completedSteps, [1]);
+    assert.strictEqual(loadHistory(1, runnerDir), runnerReply);
+
+    const discardPlan = planStepResponse(runnerDir, '```src/other.js\nx\n```\n```decisions\n{ broken\n```', []);
+    assert.ok(discardPlan.decisionsError.includes('Could not parse'), 'Broken decisions JSON is reported, not thrown');
+    const discarded = applyStepResponse({
+      cwd: runnerDir,
+      state: loadState(runnerDir),
+      context: loadContext(runnerDir),
+      stepNum: 2,
+      response: 'step two',
+      plan: discardPlan,
+      writeFiles: false
+    });
+    assert.deepStrictEqual(discarded.files, [], 'writeFiles=false discards file blocks');
+    assert.ok(!fs.existsSync(path.join(runnerDir, 'src', 'other.js')));
+    assert.strictEqual(discarded.nextStep, 3, 'A discarded step still advances, like next --run');
+
+    // Upstream write rules now applied by the shared runner (#213, #226)
+    const guardedReply = [
+      '```src/bad.js',
+      'function ( {',
+      '```',
+      '```src/fine.js',
+      'module.exports = 3;',
+      '```',
+      '```decisions',
+      '{ "framework": "Express", "decisions.cache": "Redis" }',
+      '```',
+      '```src/cut.js',
+      'const partial = 1;'
+    ].join('\n');
+    const guardedPlan = planStepResponse(runnerDir, guardedReply, []);
+    assert.deepStrictEqual(guardedPlan.truncated, ['src/cut.js'], 'Unclosed blocks are reported as truncated');
+    assert.ok(
+      !guardedPlan.applicable.some((entry) => entry.block.path === 'src/cut.js'),
+      'Truncated blocks are never applicable'
+    );
+    const guarded = applyStepResponse({
+      cwd: runnerDir,
+      state: loadState(runnerDir),
+      context: loadContext(runnerDir),
+      stepNum: 3,
+      response: guardedReply,
+      plan: guardedPlan
+    });
+    assert.deepStrictEqual(
+      guarded.files.map((file) => file.path),
+      ['src/fine.js']
+    );
+    assert.strictEqual(guarded.invalid.length, 1);
+    assert.strictEqual(guarded.invalid[0].path, 'src/bad.js');
+    assert.match(guarded.invalid[0].reason, /invalid syntax.*--force/s);
+    assert.ok(!fs.existsSync(path.join(runnerDir, 'src', 'bad.js')), 'Invalid syntax is not written without force');
+    assert.ok(!fs.existsSync(path.join(runnerDir, 'src', 'cut.js')), 'Truncated blocks are not written');
+    assert.deepStrictEqual(
+      guarded.recorded,
+      ['decisions.framework', 'decisions.cache'],
+      'Decision keys are stored under the decisions namespace'
+    );
+    assert.strictEqual(loadContext(runnerDir).decisions.framework, 'Express');
+
+    const forced = applyStepResponse({
+      cwd: runnerDir,
+      state: loadState(runnerDir),
+      context: loadContext(runnerDir),
+      stepNum: 4,
+      response: guardedReply,
+      plan: planStepResponse(runnerDir, guardedReply, []),
+      force: true
+    });
+    const forcedBad = forced.files.find((file) => file.path === 'src/bad.js');
+    assert.ok(forcedBad, 'force writes blocks that fail the syntax check');
+    assert.ok(forcedBad.validationError, 'Forced writes still report the validation error');
+    assert.deepStrictEqual(forced.invalid, []);
+  } finally {
+    fs.rmSync(runnerDir, { recursive: true, force: true });
+  }
+  console.log('  ✔ Shared step runner plans, applies and advances step responses safely.');
+
   // Custom template workspace persistence (#133): init --template writes
   // .buildwithai/template.json and later commands resolve it from there.
   console.log('\n▶ Test: custom template persists to the workspace and resolves on later commands');
