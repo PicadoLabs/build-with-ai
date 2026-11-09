@@ -259,6 +259,8 @@ the command fails with the list of missing flags instead of waiting for input.
 | `npx build-with-ai status` | Display progress bar, completed steps, and active decisions. |
 | `npx build-with-ai context [key]` | Inspect recorded decisions or retrieve a specific dot-notation path. |
 | `npx build-with-ai set <key> <value>` | Update a decision in `context.json` directly from the CLI. |
+| `npx build-with-ai validate` | Check project state, template dependencies, and required decisions without changing files. |
+| `npx build-with-ai validate --template <path>` | Validate a local template file, even before project initialization. |
 | `npx build-with-ai config` | Interactive key-picker to browse and edit decisions. |
 | `npx build-with-ai history [step]` | Inspect archived AI responses and step logs. |
 | `npx build-with-ai resume` | Summary dashboard displaying active state and recommended next action. |
@@ -336,6 +338,16 @@ Exposed tools: `get_workflow_status`, `get_active_prompt`, `complete_step`, and 
 Exposed prompts: `build-with-ai` (the current step, available as `/build-with-ai` in editors that support MCP prompts) and `step-1` through `step-N` for every step in the template.
 
 Exposed resources: `buildwithai://context`, the project's `context.json` (tech stack and recorded decisions), which editors can attach to the agent's context window.
+
+#### Zero-Key Execution with MCP Sampling
+
+If your editor supports MCP sampling, build-with-ai can generate a step with the editor's own model, so no API key is needed. When the client declares the `sampling` capability, the server also lists an `execute_step_sampled` tool that:
+
+1. Sends the current step prompt to the editor through `sampling/createMessage`, with the step's recommended models as hints.
+2. Applies the reply the same way as `next --run`: writes file blocks inside the project (unsafe paths, truncated blocks and files that fail the syntax check are skipped and reported), records the `decisions` block under `decisions.`, saves history, and advances the step.
+3. Saves an undo snapshot first, so `npx build-with-ai undo` rolls the step back.
+
+Pass `{ "dryRun": true }` to preview the proposed files and decisions without changing anything, or `maxTokens` to cap the reply length. Editors usually ask you to approve each sampling request; build-with-ai waits up to 5 minutes, configurable with `BUILD_WITH_AI_SAMPLING_TIMEOUT_MS`. Clients without sampling support do not see the tool and can keep using `get_active_prompt` and `complete_step`.
 
 ### Local Browser Dashboard
 

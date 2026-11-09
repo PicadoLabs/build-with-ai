@@ -364,9 +364,21 @@ async function executeFullE2ETest() {
     };
     try {
       const runArgs = ['next', '--run', '--provider', 'ollama', '--base-url', stubUrl];
-      const quiet = await runCli(runArgs, freshProject());
+      const quietDir = freshProject();
+      const quiet = await runCli(runArgs, quietDir);
       assert.strictEqual(quiet.code, 0, quiet.output);
       assert(!quiet.output.includes('context window'), 'Small prompts do not warn');
+
+      // next --run snapshots the pre-step state, so undo rolls the step
+      // back just like a step completed with `done` (#182).
+      const snapshotPath = path.join(quietDir, '.buildwithai', 'snapshots', 'step-01.json');
+      assert(fs.existsSync(snapshotPath), 'next --run must snapshot step 1 before advancing');
+      const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+      assert.strictEqual(snapshot.state.currentStep, 1, 'snapshot holds the pre-step state');
+      const undone = await runCli(['undo'], quietDir);
+      assert.strictEqual(undone.code, 0, undone.output);
+      assert(undone.output.includes('Undone Step 1'), 'undo reports the rolled-back step');
+      assert(!fs.existsSync(snapshotPath), 'undo consumes the snapshot');
 
       const loud = await runCli([...runArgs, '--context-window', '200'], freshProject());
       assert.strictEqual(loud.code, 0, 'The warning never blocks the run');

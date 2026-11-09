@@ -34,6 +34,7 @@ const {
   safePrompt
 } = require('../lib/ui');
 const { runInit } = require('../lib/init');
+const { runValidate } = require('../lib/validate');
 const { runResume } = require('../lib/resume');
 const { runExport } = require('../lib/export');
 const { runRulesExport } = require('../lib/rules');
@@ -152,6 +153,14 @@ program
     }
   });
 
+program
+  .command('validate')
+  .description('Validate the project context and template without changing any files.')
+  .option('-t, --template <path>', 'Validate a local template JSON file')
+  .action((options) => {
+    if (!runValidate(options)) process.exitCode = 1;
+  });
+
 // ─────────────────────────────────────────────────
 // BYOK autonomous step runner (#108)
 // ─────────────────────────────────────────────────
@@ -164,14 +173,10 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
     resolveProviderConfig,
     chatCompletion,
     runArchitectCoderPipeline,
-    parseFileBlocks,
-    findTruncatedFileBlocks,
-    parseDecisionsBlock,
-    resolveTargetPath,
-    writeFileBlocks,
     renderDiff,
     buildRunSystemPrompt
   } = require('../lib/aiClient');
+  const { planStepResponse, applyStepResponse } = require('../lib/stepRunner');
 
   let providerConfig;
   try {
@@ -256,37 +261,35 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
     process.exit(1);
   }
 
+  // Snapshot state.json + context.json BEFORE this step's files, decisions
+  // and advance are recorded, so `npx build-with-ai undo` can roll back
+  // steps completed via `next --run` too (#182). Mirrors `done` and the MCP
+  // complete_step tool; taken only once the AI response arrived, so a
+  // failed request leaves no snapshot for a step that never completed.
+  saveSnapshot(currentStepNum);
+
   // 1. File blocks → preview (with --review) → safe write.
   // targetFiles lets the parser accept extension-less declared targets
   // (e.g. Dockerfile) while still rejecting language-tagged fences (#134).
-  const blocks = parseFileBlocks(response, targetFiles);
-  let written = 0;
-  let skipped = 0;
+  const cwd = process.cwd();
+  const plan = planStepResponse(cwd, response, targetFiles);
   // Blocks without a closing fence are truncated: warn and never write
   // partial content to disk (#213).
-  for (const truncated of findTruncatedFileBlocks(response, targetFiles)) {
-    skipped++;
-    logger.warn(`Skipping truncated file block "${truncated.path}" (missing closing fence) — not written.`);
+  for (const truncatedPath of plan.truncated) {
+    logger.warn(`Skipping truncated file block "${truncatedPath}" (missing closing fence) — not written.`);
   }
-  if (blocks.length === 0) {
+  let apply = true;
+  if (plan.blocks.length === 0) {
     logger.warn('The AI response contained no file blocks.');
   } else {
-    const applicable = [];
-    for (const block of blocks) {
-      const absolute = resolveTargetPath(process.cwd(), block.path);
-      if (!absolute) {
-        skipped++;
-        logger.warn(`Skipping unsafe path "${block.path}" (outside the project directory).`);
-        continue;
-      }
-      applicable.push({ block, absolute });
+    for (const unsafePath of plan.unsafe) {
+      logger.warn(`Skipping unsafe path "${unsafePath}" (outside the project directory).`);
     }
 
-    let apply = true;
-    if (options.review && applicable.length > 0) {
+    if (options.review && plan.applicable.length > 0) {
       console.log();
       console.log(pc.bold(pc.cyan('Proposed changes:')));
-      for (const { block, absolute } of applicable) {
+      for (const { block, absolute } of plan.applicable) {
         const oldText = fs.existsSync(absolute) ? fs.readFileSync(absolute, 'utf8') : '';
         console.log();
         console.log(pc.bold(`--- ${block.path}${oldText ? '' : ' (new file)'}`));
@@ -297,61 +300,43 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
         { type: 'confirm', name: 'apply', message: 'Apply these file changes?', default: true }
       ]));
     }
-
-    if (apply) {
-      for (const result of writeFileBlocks(
-        process.cwd(),
-        applicable.map((entry) => entry.block),
-        { force: options.force === true }
-      )) {
-        if (result.written) {
-          written++;
-          logger.success(`${result.created ? 'Created' : 'Updated'} ${result.path}`);
-          if (result.validationError) {
-            logger.warn(`Wrote ${result.path} despite invalid syntax (--force): ${result.validationError}`);
-          }
-        } else if (result.skipped) {
-          skipped++;
-          logger.warn(`Skipping "${result.path}": ${result.skipped}.`);
-        }
-      }
-    } else {
+    if (!apply) {
       console.log(pc.dim('File changes discarded.'));
     }
   }
 
-  // 2. Decisions → context.
-  const recorded = [];
-  try {
-    const decisions = parseDecisionsBlock(response);
-    for (const [key, value] of Object.entries(decisions)) {
-      if (!key.trim()) continue;
-      const targetKey = key.startsWith('decisions.') ? key : `decisions.${key}`;
-      if (setByPath(context, targetKey, value)) {
-        recorded.push(targetKey);
+  // 2. Decisions → context, 3. history + advance, like `done` does.
+  const result = applyStepResponse({
+    cwd,
+    state,
+    context,
+    stepNum: currentStepNum,
+    response,
+    plan,
+    writeFiles: apply,
+    force: options.force === true
+  });
+  for (const write of result.writes) {
+    if (write.written) {
+      logger.success(`${write.created ? 'Created' : 'Updated'} ${write.path}`);
+      if (write.validationError) {
+        logger.warn(`Wrote ${write.path} despite invalid syntax (--force): ${write.validationError}`);
       }
+    } else if (write.skipped) {
+      logger.warn(`Skipping "${write.path}": ${write.skipped}.`);
     }
-    if (recorded.length > 0) {
-      saveContext(context);
-    }
-  } catch (err) {
-    logger.warn(err.message);
+  }
+  if (plan.decisionsError) {
+    logger.warn(plan.decisionsError);
   }
 
-  // 3. History + advance, like `done` does.
-  saveHistory(currentStepNum, response);
-  if (!state.completedSteps.includes(currentStepNum)) {
-    state.completedSteps.push(currentStepNum);
-  }
-  state.currentStep = currentStepNum + 1;
-  saveState(state);
-
+  const skipped = plan.truncated.length + plan.unsafe.length + result.invalid.length;
   console.log();
   logger.success(
-    `Step ${currentStepNum} complete: ${written} file(s) written` +
+    `Step ${currentStepNum} complete: ${result.files.length} file(s) written` +
       (skipped > 0 ? `, ${skipped} skipped` : '') +
-      (recorded.length > 0 ? `, ${recorded.length} decision(s) recorded` : '') +
-      `. Advanced to step ${state.currentStep}/${totalSteps}.`
+      (result.recorded.length > 0 ? `, ${result.recorded.length} decision(s) recorded` : '') +
+      `. Advanced to step ${result.nextStep}/${totalSteps}.`
   );
 }
 
