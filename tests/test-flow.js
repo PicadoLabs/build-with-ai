@@ -24,7 +24,9 @@ const {
   loadSnapshot,
   listSnapshots,
   deleteSnapshot,
-  undoLastStep
+  undoLastStep,
+  findLatestValidSnapshot,
+  recoverCorruptedFile
 } = require('../lib/state');
 
 const {
@@ -54,7 +56,7 @@ const {
   RULES_BLOCK_END
 } = require('../lib/rules');
 
-const { copyToClipboard, readFromClipboard } = require('../lib/clipboard');
+const { copyToClipboard, copyOsc52, readFromClipboard } = require('../lib/clipboard');
 
 const { parseDecisions } = require('../lib/decisionParser');
 
@@ -150,9 +152,11 @@ async function runTests() {
     fs.mkdirSync(getStorageDir(invalidStateDir));
     const statePath = path.join(getStorageDir(invalidStateDir), 'state.json');
     const readmePath = path.join(invalidStateDir, 'README.md');
-    fs.writeFileSync(statePath, '{ invalid JSON', 'utf8');
     fs.writeFileSync(readmePath, 'Existing documentation', 'utf8');
     for (const args of [[], ['--dry-run'], ['--out-dir', 'new-output']]) {
+      // Corrupted state is archived by recovery on every run (#211), so
+      // re-corrupt it before each invocation.
+      fs.writeFileSync(statePath, '{ invalid JSON', 'utf8');
       const result = require('child_process').spawnSync(
         process.execPath,
         [path.join(__dirname, '..', 'bin', 'cli.js'), 'export', ...args],
@@ -160,11 +164,21 @@ async function runTests() {
       );
       assert.ifError(result.error);
       assert.strictEqual(result.status, 1, 'Unreadable state must fail export');
-      assert(result.stderr.includes('restore valid JSON from a backup'), 'Keep the recovery guidance');
+      assert(result.stderr.includes('no valid snapshot'), 'Keep the recovery guidance');
+      assert(result.stderr.includes('build-with-ai reset'), 'Point at re-initialization');
       assert(!result.stderr.includes('TypeError'), 'Do not crash after reporting unreadable state');
       assert(!result.stdout.includes('Documentation exported successfully'));
       assert.strictEqual(fs.readFileSync(readmePath, 'utf8'), 'Existing documentation');
-      assert.strictEqual(fs.readFileSync(statePath, 'utf8'), '{ invalid JSON');
+      assert(!fs.existsSync(statePath), 'damaged state must be archived, not left in place');
+      const stateBackups = fs
+        .readdirSync(getStorageDir(invalidStateDir))
+        .filter((file) => file.startsWith('state.json.corrupted.'));
+      assert(stateBackups.length >= 1, 'damaged state must be archived before recovery is attempted');
+      assert.strictEqual(
+        fs.readFileSync(path.join(getStorageDir(invalidStateDir), stateBackups[0]), 'utf8'),
+        '{ invalid JSON',
+        'the archived copy must preserve the damaged bytes'
+      );
       assert(!fs.existsSync(path.join(invalidStateDir, 'new-output')));
       assert(!fs.existsSync(path.join(invalidStateDir, 'BUILD_LOG.md')));
       assert(!fs.existsSync(path.join(getStorageDir(invalidStateDir), 'CONTEXT.md')));
@@ -270,21 +284,27 @@ async function runTests() {
       assert.throws(() => save(circular, atomicDir), /Unable to save/);
       assert.strictEqual(fs.readFileSync(target, 'utf8'), recovered, 'Serialization errors preserve saved data');
 
-      const logger = require('../lib/logger');
-      const originalError = logger.error;
-      const messages = [];
-      try {
-        logger.error = (message) => messages.push(message);
-        originalWrite(target, '{invalid', 'utf8');
-        assert.deepStrictEqual(load(atomicDir), filename === 'state.json' ? null : {});
-        assert(
-          messages[0].includes(target) && messages[0].includes('restore valid JSON'),
-          'Corruption diagnostic identifies the file and recovery action'
-        );
-        assert.strictEqual(fs.readFileSync(target, 'utf8'), '{invalid', 'Reading does not alter corrupted data');
-      } finally {
-        logger.error = originalError;
-      }
+      // With no snapshot to restore from, a corrupted read must fail cleanly
+      // with re-init instructions instead of returning empty data (#211).
+      originalWrite(target, '{invalid', 'utf8');
+      assert.throws(
+        () => load(atomicDir),
+        (error) =>
+          error.code === 'CORRUPTED_STATE_NO_SNAPSHOT' &&
+          error.message.includes(filename) &&
+          error.message.includes('build-with-ai reset'),
+        'Corruption diagnostic identifies the file and recovery action'
+      );
+      assert(!fs.existsSync(target), 'damaged file must be archived, not left in place');
+      const corruptBackups = fs
+        .readdirSync(getStorageDir(atomicDir))
+        .filter((file) => file.startsWith(`${filename}.corrupted.`));
+      assert.strictEqual(corruptBackups.length, 1, 'damaged file must be archived before recovery is attempted');
+      assert.strictEqual(
+        fs.readFileSync(path.join(getStorageDir(atomicDir), corruptBackups[0]), 'utf8'),
+        '{invalid',
+        'the archived copy must preserve the damaged bytes'
+      );
     }
   } finally {
     fs.writeFileSync = originalWrite;
@@ -889,8 +909,38 @@ async function runTests() {
   );
   console.log('  ✔ Clipboard reading falls back to null and returns text when available.');
 
-  // Test 4c: Heuristic decision parsing for `done --from-clipboard`
-  console.log('\n▶ Test 4c: Heuristic decision parsing');
+  // Test 4c: OSC 52 clipboard fallback for remote/headless sessions (#199)
+  console.log('\n▶ Test 4c: OSC 52 Clipboard Fallback');
+  const oscWrites = [];
+  const fakeTty = {
+    isTTY: true,
+    write: (chunk) => {
+      oscWrites.push(chunk);
+      return true;
+    }
+  };
+  assert.strictEqual(copyOsc52('fallback test', fakeTty), true, 'OSC 52 must write on a TTY stream');
+  assert.strictEqual(oscWrites.length, 1, 'OSC 52 must write exactly one sequence');
+  assert.strictEqual(
+    oscWrites[0],
+    `\x1b]52;c;${Buffer.from('fallback test', 'utf8').toString('base64')}\x07`,
+    'OSC 52 sequence must carry the base64 payload with the c selector and BEL terminator'
+  );
+  assert.strictEqual(
+    copyOsc52('fallback test', { isTTY: false, write: () => true }),
+    false,
+    'OSC 52 must not write when the stream is not a TTY'
+  );
+  // A clipboardy failure in a remote session must fall through to OSC 52
+  // instead of crashing; without a TTY the copy still resolves to false.
+  const throwingClipboard = await runIsolatedClipboardFallback(
+    'module.exports = { writeSync: () => { throw new Error("no X server"); } };\n'
+  );
+  assert.strictEqual(throwingClipboard, false, 'Throwing clipboardy must resolve to false without a TTY');
+  console.log('  ✔ OSC 52 fallback writes the base64 sequence on a TTY and stays silent otherwise.');
+
+  // Test 4d: Heuristic decision parsing for `done --from-clipboard`
+  console.log('\n▶ Test 4d: Heuristic decision parsing');
   const decisionText = [
     '# Tech Stack Recommendation',
     '',
@@ -1365,6 +1415,104 @@ async function runTests() {
     fs.rmSync(redoUndoDir, { recursive: true, force: true });
   }
 
+  console.log('\n▶ Test: Corrupted state/context recovery from snapshots (#211)');
+  const corruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-corrupt-'));
+  try {
+    initState(
+      {
+        projectName: 'Corrupt Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Intermediate',
+        projectIdea: 'A recovery demo.',
+        totalSteps: 4
+      },
+      corruptDir
+    );
+    const storageDir = path.join(corruptDir, '.buildwithai');
+    saveContext({ project: { name: 'Corrupt Demo' }, decisions: { database: 'SQLite' } }, corruptDir);
+    saveSnapshot(1, corruptDir);
+
+    // Advance past the snapshot, then take a second snapshot and corrupt it.
+    const advancedState = loadState(corruptDir);
+    advancedState.currentStep = 2;
+    advancedState.completedSteps = [1];
+    saveState(advancedState, corruptDir);
+    saveContext({ project: { name: 'Corrupt Demo' }, decisions: { database: 'PostgreSQL' } }, corruptDir);
+    saveSnapshot(2, corruptDir);
+    fs.writeFileSync(path.join(storageDir, 'snapshots', 'step-02.json'), '{ broken', 'utf8');
+
+    // Corrupted context.json restores from the latest VALID snapshot only.
+    fs.writeFileSync(path.join(storageDir, 'context.json'), '{ nope', 'utf8');
+    assert.strictEqual(findLatestValidSnapshot(corruptDir).step, 1, 'corrupt snapshot must be skipped');
+    const recoveredContext = loadContext(corruptDir);
+    assert.strictEqual(recoveredContext.decisions.database, 'SQLite', 'context must roll back to snapshot 1');
+    const contextBackups = fs.readdirSync(storageDir).filter((file) => file.startsWith('context.json.corrupted.'));
+    assert.strictEqual(contextBackups.length, 1, 'exactly one context backup must be created');
+    assert.strictEqual(
+      fs.readFileSync(path.join(storageDir, contextBackups[0]), 'utf8'),
+      '{ nope',
+      'the damaged file must be archived before recovery'
+    );
+    assert.strictEqual(loadState(corruptDir).currentStep, 2, 'healthy state.json must not roll back');
+
+    // Corrupted state.json restores the same way, leaving context untouched.
+    fs.writeFileSync(path.join(storageDir, 'state.json'), '{"projectName": ', 'utf8');
+    const recoveredState = loadState(corruptDir);
+    assert.strictEqual(recoveredState.currentStep, 1, 'state must roll back to snapshot 1');
+    const stateBackups = fs.readdirSync(storageDir).filter((file) => file.startsWith('state.json.corrupted.'));
+    assert.strictEqual(stateBackups.length, 1, 'exactly one state backup must be created');
+    assert.strictEqual(loadContext(corruptDir).decisions.database, 'SQLite', 'healthy context must not roll back');
+
+    // Direct recovery reports the backup path and the snapshot step used.
+    fs.writeFileSync(path.join(storageDir, 'context.json'), '{ again', 'utf8');
+    const direct = recoverCorruptedFile(path.join(storageDir, 'context.json'), corruptDir);
+    assert.strictEqual(direct.snapshotStep, 1, 'recovery must report the snapshot step');
+    assert.ok(direct.backupPath.endsWith('.corrupted.') || direct.backupPath.includes('.corrupted.'));
+    assert.strictEqual(fs.readFileSync(direct.backupPath, 'utf8'), '{ again');
+    console.log('  ✔ Corrupted files are archived first, then restored from the latest valid snapshot.');
+  } finally {
+    fs.rmSync(corruptDir, { recursive: true, force: true });
+  }
+
+  console.log('\n▶ Test: Corrupted state with no snapshots fails cleanly (#211)');
+  const noSnapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-corrupt-none-'));
+  try {
+    initState(
+      {
+        projectName: 'No Snapshot Demo',
+        templateId: 'web-app',
+        templateTitle: 'Web App',
+        experienceLevel: 'Intermediate',
+        projectIdea: 'A no-snapshot demo.',
+        totalSteps: 4
+      },
+      noSnapshotDir
+    );
+    const storageDir = path.join(noSnapshotDir, '.buildwithai');
+    fs.writeFileSync(path.join(storageDir, 'state.json'), '{ broken', 'utf8');
+    assert.throws(
+      () => loadState(noSnapshotDir),
+      (error) =>
+        error.code === 'CORRUPTED_STATE_NO_SNAPSHOT' &&
+        error.message.includes('build-with-ai reset') &&
+        error.message.includes('build-with-ai init'),
+      'corrupted state with no snapshot must fail with re-init instructions'
+    );
+    const stateBackups = fs.readdirSync(storageDir).filter((file) => file.startsWith('state.json.corrupted.'));
+    assert.strictEqual(stateBackups.length, 1, 'damaged file must be archived even when recovery fails');
+    assert.strictEqual(fs.readFileSync(path.join(storageDir, stateBackups[0]), 'utf8'), '{ broken');
+    fs.writeFileSync(path.join(storageDir, 'context.json'), '{ broken', 'utf8');
+    assert.throws(
+      () => loadContext(noSnapshotDir),
+      (error) => error.code === 'CORRUPTED_STATE_NO_SNAPSHOT',
+      'a corrupted context read must fail the same clean way'
+    );
+    console.log('  ✔ Corrupted state with no snapshot fails cleanly with re-init instructions.');
+  } finally {
+    fs.rmSync(noSnapshotDir, { recursive: true, force: true });
+  }
+
   console.log('\n▶ Test 9c: Step Cancellation Snapshots & Context Reversion');
   const cancelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-cancel-'));
   try {
@@ -1443,7 +1591,16 @@ async function runTests() {
 
   // Test 10: Export Documentation
   console.log('\n▶ Test 10: Export (README.md, BUILD_LOG.md, CONTEXT.md)');
-  await runExport(tempDir);
+  const exportedPaths = await runExport(tempDir);
+  assert.deepStrictEqual(
+    exportedPaths,
+    [
+      path.join(tempDir, 'README.md'),
+      path.join(tempDir, 'BUILD_LOG.md'),
+      path.join(tempDir, '.buildwithai', 'CONTEXT.md')
+    ],
+    'runExport must return the written file paths'
+  );
 
   assert(fs.existsSync(path.join(tempDir, 'README.md')), 'README.md must be generated');
   assert(fs.existsSync(path.join(tempDir, 'BUILD_LOG.md')), 'BUILD_LOG.md must be generated');
@@ -2513,6 +2670,7 @@ async function runTests() {
     PROVIDERS,
     resolveProviderConfig,
     chatCompletion,
+    runArchitectCoderPipeline,
     parseFileBlocks,
     findTruncatedFileBlocks,
     validateBlockContent,
@@ -2524,6 +2682,125 @@ async function runTests() {
     loadDotEnv
   } = require('../lib/aiClient');
 
+  console.log('\n▶ Test: Multi-agent pipeline');
+
+  const pipelineProviderConfig = resolveProviderConfig({
+    provider: 'openai',
+    apiKey: 'test-key'
+  });
+
+  const pipelineTarget = `pipeline-test-${process.pid}.js`;
+  const architectureResponse = JSON.stringify({
+    contextValid: true,
+    contextErrors: [],
+    dataContracts: [{ name: 'Example', fields: [] }],
+    targetFiles: [pipelineTarget],
+    implementationPlan: ['Create the example file']
+  });
+
+  const coderResponse = [`\`\`\`${pipelineTarget}`, "console.log('pipeline test');", '```'].join('\n');
+
+  const createPipelineFetch = (responses) => {
+    let callIndex = 0;
+
+    return async () => {
+      const content = responses[callIndex++];
+
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            choices: [{ message: { content } }]
+          })
+      };
+    };
+  };
+
+  const pipelineArgs = {
+    providerConfig: pipelineProviderConfig,
+    resolvedPrompt: 'Create a simple example JavaScript file.',
+    stepNum: 1,
+    totalSteps: 1,
+    targetFiles: [pipelineTarget],
+    context: {}
+  };
+
+  const successfulPipeline = await runArchitectCoderPipeline({
+    ...pipelineArgs,
+    fetchImpl: createPipelineFetch([
+      architectureResponse,
+      coderResponse,
+      JSON.stringify({ approved: true, issues: [] })
+    ])
+  });
+
+  assert.strictEqual(successfulPipeline.review.approved, true);
+  assert.strictEqual(successfulPipeline.coderResponse, coderResponse);
+  assert.strictEqual(fs.existsSync(path.join(process.cwd(), pipelineTarget)), false);
+  console.log('  ✔ Architect → Coder → Reviewer succeeds without writing files.');
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      fetchImpl: createPipelineFetch([
+        architectureResponse,
+        coderResponse,
+        JSON.stringify({
+          approved: false,
+          issues: ['Exposed secret detected']
+        })
+      ])
+    }),
+    /Reviewer rejected/
+  );
+
+  assert.strictEqual(fs.existsSync(path.join(process.cwd(), pipelineTarget)), false);
+  console.log('  ✔ Reviewer rejection prevents successful pipeline completion.');
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      fetchImpl: createPipelineFetch(['Invalid JSON'])
+    }),
+    /Architect output is invalid JSON/
+  );
+
+  let invalidContextFetchCalled = false;
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      context: { project: null },
+      fetchImpl: async () => {
+        invalidContextFetchCalled = true;
+        throw new Error('AI provider should not be called');
+      }
+    }),
+    /Invalid context\.json: project must be an object/
+  );
+
+  assert.strictEqual(invalidContextFetchCalled, false);
+  console.log('  ✔ Invalid context is rejected before AI execution.');
+  console.log('  ✔ Invalid Architect output is rejected.');
+
+  let unsafePathFetchCalled = false;
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      targetFiles: ['../outside.js'],
+      fetchImpl: async () => {
+        unsafePathFetchCalled = true;
+        throw new Error('AI provider should not be called');
+      }
+    }),
+    /Unsafe declared target file/
+  );
+
+  assert.strictEqual(unsafePathFetchCalled, false);
+  console.log('  ✔ Unsafe target paths are rejected before AI execution.');
+
   assert.deepStrictEqual(
     Object.keys(PROVIDERS).sort(),
     ['anthropic', 'deepseek', 'gemini', 'groq', 'jev', 'ollama', 'openai', 'together'],
@@ -2534,7 +2811,15 @@ async function runTests() {
 
   // Key resolution order: --api-key flag > env var > .buildwithai/.env
   const savedEnv = {};
-  for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY', 'BUILD_WITH_AI_PROVIDER']) {
+  for (const key of [
+    'OPENAI_API_KEY',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_MODEL',
+    'GEMINI_API_KEY',
+    'GEMINI_MODEL',
+    'DEEPSEEK_API_KEY',
+    'BUILD_WITH_AI_PROVIDER'
+  ]) {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
@@ -2559,7 +2844,12 @@ async function runTests() {
 
     const fromEnv = resolveProviderConfig({ provider: 'anthropic' });
     assert.strictEqual(fromEnv.apiKey, 'env-key', 'Env var must be picked up');
-    assert.strictEqual(fromEnv.model, 'claude-haiku-4-6');
+    assert.strictEqual(fromEnv.model, 'claude-haiku-5-5');
+
+    const geminiDefault = resolveProviderConfig({ provider: 'gemini' });
+    assert.strictEqual(geminiDefault.model, 'gemini-3.8-flash', 'Gemini must default to a supported model');
+    const geminiFromFlag = resolveProviderConfig({ provider: 'gemini', model: 'custom-gemini-model' });
+    assert.strictEqual(geminiFromFlag.model, 'custom-gemini-model', 'Explicit Gemini model must take precedence');
 
     const dotenvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-dotenv-'));
     try {
@@ -2702,7 +2992,7 @@ async function runTests() {
 
   calls.length = 0;
   const anthropicText = await chatCompletion(
-    { kind: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-haiku-4-6', apiKey: 'ak' },
+    { kind: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-haiku-5-5', apiKey: 'ak' },
     messages,
     { fetchImpl: mockFetch({ content: [{ type: 'text', text: 'claude says hi' }] }) }
   );
@@ -2719,7 +3009,7 @@ async function runTests() {
     {
       kind: 'gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       apiKey: 'gk'
     },
     messages,
@@ -2731,7 +3021,7 @@ async function runTests() {
   );
   assert.strictEqual(geminiText, 'gemini says hi');
   assert.ok(calls[0].url.includes(':generateContent'), 'Gemini path');
-  assert.ok(calls[0].url.includes('gemini-2.5-flash'), 'Gemini model in URL');
+  assert.ok(calls[0].url.includes('gemini-3.8-flash'), 'Gemini model in URL');
   assert.strictEqual(calls[0].init.headers['x-goog-api-key'], 'gk');
   const geminiBody = JSON.parse(calls[0].init.body);
   assert.strictEqual(geminiBody.systemInstruction.parts[0].text, 'Be terse.');
@@ -3270,7 +3560,7 @@ async function runTests() {
     );
     assert.strictEqual(guarded.invalid.length, 1);
     assert.strictEqual(guarded.invalid[0].path, 'src/bad.js');
-    assert.match(guarded.invalid[0].reason, /invalid syntax.*--force/);
+    assert.match(guarded.invalid[0].reason, /invalid syntax.*--force/s);
     assert.ok(!fs.existsSync(path.join(runnerDir, 'src', 'bad.js')), 'Invalid syntax is not written without force');
     assert.ok(!fs.existsSync(path.join(runnerDir, 'src', 'cut.js')), 'Truncated blocks are not written');
     assert.deepStrictEqual(

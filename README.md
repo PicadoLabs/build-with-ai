@@ -262,6 +262,7 @@ the command fails with the list of missing flags instead of waiting for input.
 | `npx build-with-ai config` | Interactive key-picker to browse and edit decisions. |
 | `npx build-with-ai history [step]` | Inspect archived AI responses and step logs. |
 | `npx build-with-ai resume` | Summary dashboard displaying active state and recommended next action. |
+| `npx build-with-ai ui` | Open a local browser dashboard for progress, phases, decisions, history, and exports. |
 
 ### Documentation & Editor Rules
 
@@ -341,6 +342,25 @@ If your editor supports MCP sampling, build-with-ai can generate a step with the
 3. Saves an undo snapshot first, so `npx build-with-ai undo` rolls the step back.
 
 Pass `{ "dryRun": true }` to preview the proposed files and decisions without changing anything, or `maxTokens` to cap the reply length. Editors usually ask you to approve each sampling request; build-with-ai waits up to 5 minutes, configurable with `BUILD_WITH_AI_SAMPLING_TIMEOUT_MS`. Clients without sampling support do not see the tool and can keep using `get_active_prompt` and `complete_step`.
+
+### Local Browser Dashboard
+
+For larger templates, inspect the whole project in your browser instead of the terminal:
+
+```bash
+npx build-with-ai ui
+
+# Use another port, or skip opening the browser automatically
+npx build-with-ai ui --port 4000 --no-open
+```
+
+The dashboard is served by Node's built-in `http` module at `http://127.0.0.1:3721` and shows:
+- A progress bar and a workflow phase tree with completed, current, and pending steps
+- A decision explorer with search and phase filters
+- A history viewer for archived `history/step-XX.md` responses
+- One-click buttons to export documentation and sync editor rules
+
+It listens on `127.0.0.1` only, refreshes automatically as you run `done` in another terminal, and never overwrites an existing `README.md` (it writes `README.ai.md` instead). Press `Ctrl+C` to stop it.
 
 ### Editor Rules Synchronization
 

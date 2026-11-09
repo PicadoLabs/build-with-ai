@@ -37,6 +37,8 @@ const { runInit } = require('../lib/init');
 const { runResume } = require('../lib/resume');
 const { runExport } = require('../lib/export');
 const { runRulesExport } = require('../lib/rules');
+const { buildStatusSummary } = require('../lib/status');
+const { DEFAULT_PORT, startDashboardServer, openBrowser } = require('../lib/dashboard');
 const logger = require('../lib/logger');
 
 const program = new Command();
@@ -158,7 +160,13 @@ program
 // saves the raw response to history, and advances the workflow — without
 // the copy/paste round-trip. Default `next` behavior is untouched.
 async function runAutonomousStep({ state, context, totalSteps, currentStepNum, resolvedPrompt, targetFiles, options }) {
-  const { resolveProviderConfig, chatCompletion, renderDiff, buildRunSystemPrompt } = require('../lib/aiClient');
+  const {
+    resolveProviderConfig,
+    chatCompletion,
+    runArchitectCoderPipeline,
+    renderDiff,
+    buildRunSystemPrompt
+  } = require('../lib/aiClient');
   const { planStepResponse, applyStepResponse } = require('../lib/stepRunner');
 
   let providerConfig;
@@ -213,10 +221,32 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
 
   let response;
   try {
-    response = await chatCompletion(providerConfig, [
-      { role: 'system', content: system },
-      { role: 'user', content: resolvedPrompt }
-    ]);
+    if (options.pipeline) {
+      const requestedPipeline = options.pipeline.split(',').map((agent) => agent.trim().toLowerCase());
+
+      if (requestedPipeline.join(',') !== 'architect,coder,reviewer') {
+        throw new Error('Invalid pipeline. Use --pipeline architect,coder,reviewer');
+      }
+
+      logger.info('Running Architect → Coder → Reviewer pipeline...');
+
+      const pipelineResult = await runArchitectCoderPipeline({
+        providerConfig,
+        resolvedPrompt,
+        stepNum: currentStepNum,
+        totalSteps,
+        targetFiles,
+        context
+      });
+
+      // Use only the Coder response returned after Reviewer approval.
+      response = pipelineResult.coderResponse;
+    } else {
+      response = await chatCompletion(providerConfig, [
+        { role: 'system', content: system },
+        { role: 'user', content: resolvedPrompt }
+      ]);
+    }
   } catch (err) {
     logger.error(`AI request failed: ${err.message}`);
     process.exit(1);
@@ -551,33 +581,20 @@ function runStatusCommand(options = {}) {
   const context = loadContext();
   const template = getTemplate(state.templateId);
 
-  const totalSteps = template ? template.steps.length : state.totalSteps || 0;
-  const currentStepNum = state.currentStep || 1;
-  const completedList = state.completedSteps || [];
-  const completedCount = countUniqueCompletedSteps(state.completedSteps, totalSteps);
-  const exportReady = totalSteps > 0 && completedCount === totalSteps;
-  const decisions = context.decisions || {};
-
+  const summary = buildStatusSummary(state, context, template);
   if (options.json) {
-    const output = {
-      projectName: state.projectName,
-      templateId: state.templateId,
-      templateTitle: state.templateTitle || state.templateId,
-      experienceLevel: state.experienceLevel,
-      projectIdea: state.projectIdea,
-      startedAt: state.startedAt || null,
-      updatedAt: state.updatedAt || null,
-      currentStep: currentStepNum,
-      totalSteps,
-      completedSteps: completedList,
-      completedCount,
-      progressPercent: totalSteps > 0 ? Math.round((completedCount / totalSteps) * 100) : 0,
-      exportReady,
-      decisions
-    };
-    console.log(JSON.stringify(output, null, 2));
+    console.log(JSON.stringify(summary, null, 2));
     return;
   }
+
+  const {
+    totalSteps,
+    currentStep: currentStepNum,
+    completedSteps: completedList,
+    completedCount,
+    exportReady,
+    decisions
+  } = summary;
 
   console.log();
   console.log(pc.bold(pc.cyan(`PROJECT STATUS: ${state.projectName}`)));
@@ -631,6 +648,47 @@ function runStatusCommand(options = {}) {
   console.log();
 }
 
+async function runUiCommand(options = {}) {
+  if (!isInitialized()) {
+    logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
+    process.exit(1);
+  }
+
+  const port = Number(options.port);
+  if (!/^\d+$/.test(String(options.port)) || port > 65535) {
+    logger.error('Invalid port. Use a whole number between 0 and 65535.');
+    process.exit(1);
+  }
+
+  let server;
+  let url;
+  try {
+    ({ server, url } = await startDashboardServer({ cwd: process.cwd(), port }));
+  } catch (error) {
+    logger.error(error.message);
+    process.exit(1);
+  }
+
+  console.log();
+  logger.success(`Dashboard running at ${pc.bold(pc.cyan(url))}`);
+  console.log(pc.dim('  Serving this project on 127.0.0.1 only. Press Ctrl+C to stop.'));
+  console.log();
+
+  if (options.open && process.stdout.isTTY && !process.env.CI) {
+    if (!(await openBrowser(url))) {
+      logger.warn(`Could not open a browser automatically. Visit ${url} instead.`);
+    }
+  }
+
+  const shutdown = () => {
+    server.close(() => process.exit(0));
+    // Idle keep-alive connections from the browser would otherwise delay exit.
+    server.closeAllConnections?.();
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
+}
+
 async function runExportCommand(options = {}) {
   if (!isInitialized()) {
     logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
@@ -669,6 +727,7 @@ program
   )
   .option('--review', 'With --run: show a colored diff of the proposed file changes and confirm before applying')
   .option('--force', 'With --run: write file blocks even when syntax validation fails')
+  .option('--pipeline <agents>', 'Run a multi-agent pipeline: architect,coder,reviewer')
   .action(async (options) => {
     await runNextCommand(options);
   });
@@ -847,11 +906,16 @@ program
 
       // Full AI response
       if (recordChoice === 'full' || recordChoice === 'both') {
-        // Multi-line-safe editor when the clipboard read failed: pasting large
-        // AI responses into single-line terminal prompts can truncate text.
+        // Multi-line paste safety (#187): Inquirer's single-line `input`
+        // prompt captures only the first line of a pasted multi-line
+        // response and spills the rest into the shell. On an interactive
+        // terminal, open the `editor` prompt instead so the whole paste
+        // is captured. Piped (non-TTY) input keeps `input` so scripted
+        // and e2e flows are unaffected.
+        const fullResponseType = useClipboard || process.stdin.isTTY ? 'editor' : 'input';
         const { fullResponse } = await safePrompt([
           {
-            type: useClipboard ? 'editor' : 'input',
+            type: fullResponseType,
             name: 'fullResponse',
             message: 'Paste or enter the AI response (summary or key notes):',
             default: ''
@@ -1341,6 +1405,18 @@ program
   });
 
 // ─────────────────────────────────────────────────
+// `ui` command
+// ─────────────────────────────────────────────────
+program
+  .command('ui')
+  .description('Open a local browser dashboard for progress, decisions, history and exports.')
+  .option('-p, --port <number>', 'Port to serve the dashboard on (127.0.0.1 only)', String(DEFAULT_PORT))
+  .option('--no-open', 'Do not open the dashboard in a browser automatically')
+  .action(async (options) => {
+    await runUiCommand(options);
+  });
+
+// ─────────────────────────────────────────────────
 // Default action (no subcommand provided)
 // ─────────────────────────────────────────────────
 program.action(async () => {
@@ -1409,6 +1485,12 @@ program.action(async () => {
 });
 
 program.parseAsync(process.argv).catch((error) => {
-  console.error(error);
+  // Corrupted state with no snapshot to restore from already carries a
+  // complete, actionable message: print it without a stack trace (#211).
+  if (error && error.code === 'CORRUPTED_STATE_NO_SNAPSHOT') {
+    console.error(error.message);
+  } else {
+    console.error(error);
+  }
   process.exitCode = 1;
 });

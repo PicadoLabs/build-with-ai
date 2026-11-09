@@ -114,6 +114,7 @@ async function executeFullE2ETest() {
     History: 'FAIL',
     'Export dry run': 'Fail',
     Export: 'FAIL',
+    'UI dashboard': 'FAIL',
     Reset: 'FAIL',
     'Error handling': 'FAIL'
   };
@@ -821,6 +822,55 @@ async function executeFullE2ETest() {
     console.log('   ✔ Export generated README.md, BUILD_LOG.md, and CONTEXT.md deterministically.\n');
 
     // -------------------------------------------------------------
+    // Step 11b: UI Dashboard Command
+    // -------------------------------------------------------------
+    console.log('🔹 11b. Testing `build-with-ai ui --no-open --port 0`...');
+    const uiProcess = spawn(process.execPath, [CLI_BIN, 'ui', '--no-open', '--port', '0'], {
+      cwd: testDir,
+      env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    try {
+      const uiUrl = await new Promise((resolve, reject) => {
+        let uiOutput = '';
+        const timer = setTimeout(() => reject(new Error(`ui did not start:\n${uiOutput}`)), 10000);
+        uiProcess.stdout.on('data', (chunk) => {
+          uiOutput += chunk.toString();
+          const match = uiOutput.match(/http:\/\/127\.0\.0\.1:\d+/);
+          if (match) {
+            clearTimeout(timer);
+            resolve(match[0]);
+          }
+        });
+        uiProcess.stderr.on('data', (chunk) => (uiOutput += chunk.toString()));
+        uiProcess.once('exit', (code) => {
+          clearTimeout(timer);
+          reject(new Error(`ui exited early with code ${code}:\n${uiOutput}`));
+        });
+      });
+
+      const pageRes = await fetch(`${uiUrl}/`);
+      assert.strictEqual(pageRes.status, 200, 'Dashboard page is served');
+      assert((await pageRes.text()).includes('build-with-ai'), 'Dashboard page renders');
+
+      const projectRes = await fetch(`${uiUrl}/api/project`);
+      assert.strictEqual(projectRes.status, 200, 'Project API responds');
+      const project = await projectRes.json();
+      assert.strictEqual(project.status.projectName, 'Expense Tracker', 'API reports state.json');
+      assert(project.phases.length > 0, 'API reports the phase tree');
+      assert(project.history.length > 0, 'API reports step history files');
+    } finally {
+      if (uiProcess.exitCode === null && uiProcess.signalCode === null) {
+        const exited = new Promise((resolve) => uiProcess.once('exit', resolve));
+        uiProcess.kill('SIGINT');
+        await exited;
+      }
+    }
+
+    report['UI dashboard'] = 'PASS';
+    console.log('   ✔ ui served the dashboard and project data from state.json, context.json and history.\n');
+
+    // -------------------------------------------------------------
     // Step 12: Reset Command
     // -------------------------------------------------------------
     console.log('🔹 12. Testing `build-with-ai reset`...');
@@ -884,7 +934,8 @@ async function executeFullE2ETest() {
     assert(
       rCorrupt.stderr.includes('Failed to parse') ||
         rCorrupt.stderr.includes('Failed to load project state') ||
-        rCorrupt.stdout.includes('Failed to load project state'),
+        rCorrupt.stdout.includes('Failed to load project state') ||
+        rCorrupt.stderr.includes('is corrupted and no valid snapshot was found'),
       'resume corrupt state'
     );
 
