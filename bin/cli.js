@@ -261,6 +261,13 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
     process.exit(1);
   }
 
+  // Snapshot state.json + context.json BEFORE this step's files, decisions
+  // and advance are recorded, so `npx build-with-ai undo` can roll back
+  // steps completed via `next --run` too (#182). Mirrors `done` and the MCP
+  // complete_step tool; taken only once the AI response arrived, so a
+  // failed request leaves no snapshot for a step that never completed.
+  saveSnapshot(currentStepNum);
+
   // 1. File blocks → preview (with --review) → safe write.
   // targetFiles lets the parser accept extension-less declared targets
   // (e.g. Dockerfile) while still rejecting language-tagged fences (#134).
