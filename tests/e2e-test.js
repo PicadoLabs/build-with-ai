@@ -724,6 +724,8 @@ async function executeFullE2ETest() {
 
     assert(!fs.existsSync(path.join(testDir, 'README.md')), 'README.md should not exist before export');
     assert(!fs.existsSync(path.join(testDir, 'BUILD_LOG.md')), 'BUILD_LOG.md should not exist before export');
+    assert(!fs.existsSync(path.join(testDir, 'ARCHITECTURE.md')), 'ARCHITECTURE.md should not exist before export');
+    assert(!fs.existsSync(path.join(testDir, 'AGENTS.md')), 'AGENTS.md should not exist before export');
     assert(
       !fs.existsSync(path.join(testDir, '.buildwithai', 'CONTEXT.md')),
       'CONTEXT.md should not exist before export'
@@ -732,11 +734,15 @@ async function executeFullE2ETest() {
     const dryRunRes = runSync(['export', '--dry-run'], testDir);
     assert(dryRunRes.stdout.includes('README.md'), 'Dry run lists README.md');
     assert(dryRunRes.stdout.includes('BUILD_LOG.md'), 'Dry run lists BUILD_LOG.md');
+    assert(dryRunRes.stdout.includes('ARCHITECTURE.md'), 'Dry run lists ARCHITECTURE.md');
+    assert(dryRunRes.stdout.includes('AGENTS.md'), 'Dry run lists AGENTS.md');
     assert(dryRunRes.stdout.includes('CONTEXT.md'), 'Dry run lists CONTEXT.md');
     assert(dryRunRes.stdout.toLowerCase().includes('no files'), 'Dry run states that no files were written');
 
     assert(!fs.existsSync(path.join(testDir, 'README.md')), 'README.md still absent after dry run');
     assert(!fs.existsSync(path.join(testDir, 'BUILD_LOG.md')), 'BUILD_LOG.md still absent after dry run');
+    assert(!fs.existsSync(path.join(testDir, 'ARCHITECTURE.md')), 'ARCHITECTURE.md still absent after dry run');
+    assert(!fs.existsSync(path.join(testDir, 'AGENTS.md')), 'AGENTS.md still absent after dry run');
     assert(!fs.existsSync(path.join(testDir, '.buildwithai', 'CONTEXT.md')), 'CONTEXT.md still absent after dry run');
 
     report['Export dry run'] = 'PASS';
@@ -750,10 +756,14 @@ async function executeFullE2ETest() {
     assert(exportRes.stdout.includes('README.md'), 'README exported');
     assert(exportRes.stdout.includes('BUILD_LOG.md'), 'BUILD_LOG exported');
     assert(exportRes.stdout.includes('CONTEXT.md'), 'CONTEXT.md exported');
+    assert(exportRes.stdout.includes('ARCHITECTURE.md'), 'ARCHITECTURE exported');
+    assert(exportRes.stdout.includes('AGENTS.md'), 'AGENTS exported');
 
     assert(fs.existsSync(path.join(testDir, 'README.md')), 'README.md exists');
     assert(fs.existsSync(path.join(testDir, 'BUILD_LOG.md')), 'BUILD_LOG.md exists');
     assert(fs.existsSync(path.join(testDir, '.buildwithai', 'CONTEXT.md')), 'CONTEXT.md exists');
+    assert(fs.existsSync(path.join(testDir, 'ARCHITECTURE.md')), 'ARCHITECTURE.md exists');
+    assert(fs.existsSync(path.join(testDir, 'AGENTS.md')), 'AGENTS.md exists');
 
     const readmeContent = fs.readFileSync(path.join(testDir, 'README.md'), 'utf8');
     assert(readmeContent.includes('# Expense Tracker'), 'README header check');

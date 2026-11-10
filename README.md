@@ -270,11 +270,17 @@ the command fails with the list of missing flags instead of waiting for input.
 
 | Command | Description |
 | :--- | :--- |
-| `npx build-with-ai export` | Generate `README.md`, `BUILD_LOG.md`, and `.buildwithai/CONTEXT.md`. |
+| `npx build-with-ai export` | Generate `README.md`, `BUILD_LOG.md`, `.buildwithai/CONTEXT.md`, `ARCHITECTURE.md`, and `AGENTS.md`. |
 | `npx build-with-ai export --rules` | Sync decisions to `.cursorrules`, `CLAUDE.md`, `.windsurfrules`, and Copilot. |
-| `npx build-with-ai export --force` | Overwrite existing `README.md` without confirmation. |
+| `npx build-with-ai export --dry-run` | Preview the export paths without writing any files. |
+| `npx build-with-ai export --force` | Overwrite existing `README.md`, `ARCHITECTURE.md`, and `AGENTS.md`. |
 | `npx build-with-ai reset` | Clean `.buildwithai/` state while preserving project source code. |
 | `npx build-with-ai mcp` | Launch Model Context Protocol (MCP) stdio server. |
+
+The architecture export summarizes the recorded stack, service boundaries, and data models.
+The agent instructions export includes recorded testing commands, style rules, and restricted
+paths. Missing decisions are identified instead of being filled with guessed settings.
+Existing `AGENTS.md` and `ARCHITECTURE.md` files are preserved unless you use `--force`.
 
 ---
 
