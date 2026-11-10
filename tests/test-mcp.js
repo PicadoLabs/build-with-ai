@@ -12,7 +12,15 @@ const {
   runMcpServer,
   SAMPLED_TOOL_DEFINITION
 } = require('../lib/mcp');
-const { initState, loadState, saveState, loadContext, loadHistory, getSnapshotsDir } = require('../lib/state');
+const {
+  initState,
+  isInitialized,
+  loadState,
+  saveState,
+  loadContext,
+  loadHistory,
+  getSnapshotsDir
+} = require('../lib/state');
 const { getTemplate } = require('../lib/promptEngine');
 
 const TOOL = SAMPLED_TOOL_DEFINITION.name;
@@ -99,6 +107,7 @@ async function startHost(cwd, { sampling = true, onSample = () => textResult(GOO
     samplingRequests,
     request,
     callTool: async (args = {}) => (await request('tools/call', { name: TOOL, arguments: args })).result,
+    callNamedTool: async (name, args = {}) => (await request('tools/call', { name, arguments: args })).result,
     listTools: async () => (await request('tools/list', {})).result.tools.map((tool) => tool.name),
     close: async () => {
       input.end();
@@ -429,6 +438,139 @@ async function testFailures() {
   }
 }
 
+async function testUndoStep() {
+  console.log('\n▶ Test: undo_step rolls back the latest completed step');
+  const dir = createProject();
+  try {
+    const host = await startHost(dir);
+    const empty = await host.callNamedTool('undo_step');
+    assert.strictEqual(empty.isError, true);
+    assert.match(empty.content[0].text, /Nothing to undo/);
+
+    const done = await host.callNamedTool('complete_step', {
+      decisions: { 'decisions.database': 'PostgreSQL' },
+      response: '# Step 1 done\n\nPicked PostgreSQL.'
+    });
+    assert.ok(!done.isError, done.content[0].text);
+    assert.strictEqual(loadState(dir).currentStep, 2);
+    assert.ok(snapshotExists(dir, 1), 'complete_step saves an undo snapshot');
+    assert.strictEqual(loadHistory(1, dir), '# Step 1 done\n\nPicked PostgreSQL.');
+
+    const undone = await host.callNamedTool('undo_step');
+    assert.ok(!undone.isError, undone.content[0].text);
+    const summary = JSON.parse(undone.content[0].text);
+    assert.strictEqual(summary.undoneStep, 1);
+    assert.strictEqual(summary.currentStep, 1);
+    assert.deepStrictEqual(summary.completedSteps, []);
+    assert.strictEqual(loadState(dir).currentStep, 1);
+    assert.strictEqual(loadContext(dir).decisions.database, undefined, 'Decisions roll back with the step');
+    assert.strictEqual(loadHistory(1, dir), null, 'The history log is removed');
+    assert.ok(!snapshotExists(dir, 1), 'The snapshot is consumed');
+
+    const again = await host.callNamedTool('undo_step');
+    assert.strictEqual(again.isError, true, 'A second undo has nothing left to roll back');
+    await host.close();
+    console.log('  ✔ undo_step restores state/context, removes history, and consumes the snapshot.');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testExportRules() {
+  console.log('\n▶ Test: export_rules syncs decisions into editor rule files');
+  const dir = createProject();
+  try {
+    const host = await startHost(dir);
+    const invalid = await host.callNamedTool('export_rules', { dryRun: 'yes' });
+    assert.strictEqual(invalid.isError, true);
+    assert.match(invalid.content[0].text, /"dryRun" must be a boolean/);
+
+    const preview = await host.callNamedTool('export_rules', { dryRun: true });
+    assert.ok(!preview.isError, preview.content[0].text);
+    const listed = JSON.parse(preview.content[0].text);
+    assert.strictEqual(listed.dryRun, true);
+    assert.ok(listed.files.includes('.cursorrules'));
+    assert.ok(listed.files.includes('CLAUDE.md'));
+    assert.ok(!fs.existsSync(path.join(dir, '.cursorrules')), 'Dry run writes no files');
+
+    await host.callNamedTool('complete_step', { decisions: { 'decisions.database': 'PostgreSQL' } });
+    const synced = await host.callNamedTool('export_rules');
+    assert.ok(!synced.isError, synced.content[0].text);
+    const summary = JSON.parse(synced.content[0].text);
+    assert.strictEqual(summary.dryRun, false);
+    for (const file of ['.cursorrules', '.windsurfrules', 'CLAUDE.md']) {
+      const filePath = path.join(dir, file);
+      assert.ok(fs.existsSync(filePath), `${file} is written`);
+      assert.match(fs.readFileSync(filePath, 'utf8'), /PostgreSQL/, `${file} carries the recorded decision`);
+    }
+    assert.match(
+      fs.readFileSync(path.join(dir, '.cursor', 'rules', 'project-decisions.mdc'), 'utf8'),
+      /PostgreSQL/,
+      'The Cursor .mdc rule file is synced too'
+    );
+    await host.close();
+    console.log('  ✔ export_rules lists files on dry run and syncs decisions into every rule file.');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testInitProject() {
+  console.log('\n▶ Test: init_project bootstraps an uninitialized directory');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-mcp-init-'));
+  try {
+    const host = await startHost(dir);
+    assert.ok((await host.listTools()).includes('init_project'), 'init_project is listed before init');
+
+    const missing = await host.callNamedTool('init_project', { projectIdea: 'A demo' });
+    assert.strictEqual(missing.isError, true);
+    assert.match(missing.content[0].text, /"projectName" is required/);
+
+    const unknown = await host.callNamedTool('init_project', {
+      templateId: 'no-such-template',
+      projectName: 'Demo',
+      projectIdea: 'A demo'
+    });
+    assert.strictEqual(unknown.isError, true);
+    assert.match(unknown.content[0].text, /Unknown template/);
+
+    const badLevel = await host.callNamedTool('init_project', {
+      projectName: 'Demo',
+      projectIdea: 'A demo',
+      experienceLevel: 'Expert'
+    });
+    assert.strictEqual(badLevel.isError, true);
+    assert.match(badLevel.content[0].text, /experienceLevel/);
+
+    const created = await host.callNamedTool('init_project', {
+      templateId: 'saas-mvp',
+      projectName: 'MCP Init Demo',
+      projectIdea: 'A demo project',
+      experienceLevel: 'Beginner'
+    });
+    assert.ok(!created.isError, created.content[0].text);
+    const summary = JSON.parse(created.content[0].text);
+    assert.strictEqual(summary.projectName, 'MCP Init Demo');
+    assert.strictEqual(summary.templateId, 'saas-mvp');
+    assert.strictEqual(summary.currentStep, 1);
+    assert.ok(summary.totalSteps > 0);
+    assert.strictEqual(isInitialized(dir), true);
+    assert.strictEqual(loadState(dir).projectName, 'MCP Init Demo');
+
+    const status = await host.callNamedTool('get_workflow_status');
+    assert.ok(!status.isError, status.content[0].text);
+    assert.strictEqual(JSON.parse(status.content[0].text).projectName, 'MCP Init Demo');
+
+    const again = await host.callNamedTool('init_project', { projectName: 'Demo', projectIdea: 'A demo' });
+    assert.strictEqual(again.isError, true);
+    assert.match(again.content[0].text, /already initialized/);
+    await host.close();
+    console.log('  ✔ init_project validates arguments, bootstraps the project, and refuses a second init.');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 let completed = false;
 // A pending promise with nothing keeping the event loop alive would end the
 // process early with exit code 0; treat that as a failure.
@@ -447,6 +589,9 @@ async function runTests() {
   await testWriteGuards();
   await testDryRunAndValidation();
   await testFailures();
+  await testUndoStep();
+  await testExportRules();
+  await testInitProject();
   completed = true;
   console.log('\nAll MCP tests passed.');
 }

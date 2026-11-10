@@ -339,7 +339,7 @@ Add to your editor configuration (`.cursor/mcp.json` or `claude_desktop_config.j
 }
 ```
 
-Exposed tools: `get_workflow_status`, `get_active_prompt`, `complete_step`, and `get_context`. Steps completed via MCP automatically create safe rollback snapshots.
+Exposed tools: `get_workflow_status`, `get_active_prompt`, `complete_step`, `get_context`, `undo_step`, `export_rules`, and `init_project`. Steps completed via MCP automatically create safe rollback snapshots, which `undo_step` restores; `export_rules` syncs decisions into `.cursorrules`, `CLAUDE.md`, and the other editor rule files; `init_project` bootstraps a project in an empty directory from a built-in template.
 
 Exposed prompts: `build-with-ai` (the current step, available as `/build-with-ai` in editors that support MCP prompts) and `step-1` through `step-N` for every step in the template.
 
