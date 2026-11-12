@@ -162,6 +162,62 @@ program
   });
 
 // ─────────────────────────────────────────────────
+// Git merge driver for context.json (#219)
+// ─────────────────────────────────────────────────
+// A custom driver (`merge-driver %O %A %B`) merges .buildwithai/context.json
+// structurally across branches, so merging never leaves git conflict
+// markers inside the JSON. `git-setup` registers it in this repository.
+program
+  .command('merge-driver <base> <current> <other>')
+  .description(
+    'Three-way merge for context.json (git merge driver: invoked as merge-driver %O %A %B, writes the result to <current>).'
+  )
+  .action((base, current, other) => {
+    const { mergeContextFiles } = require('../lib/mergeDriver');
+    let result;
+    try {
+      result = mergeContextFiles(base, current, other);
+    } catch (error) {
+      logger.error(error.message);
+      process.exit(1);
+    }
+    try {
+      fs.writeFileSync(current, `${JSON.stringify(result.merged, null, 2)}\n`, 'utf8');
+    } catch (error) {
+      logger.error(`Unable to write merged context to ${current}: ${error.message}`);
+      process.exit(1);
+    }
+    for (const conflict of result.conflicts) {
+      logger.warn(
+        `Merge conflict on "${conflict.key}" (both branches changed it): kept the current-branch value; ` +
+          `recorded under "mergeConflicts" in context.json.`
+      );
+    }
+    logger.success(
+      `Merged context.json${result.conflicts.length > 0 ? ` with ${result.conflicts.length} conflict(s) recorded` : ' cleanly'}.`
+    );
+  });
+
+program
+  .command('git-setup')
+  .description('Register the build-with-ai merge driver for .buildwithai/context.json in this git repository.')
+  .action(() => {
+    const { setupGitMergeDriver } = require('../lib/mergeDriver');
+    try {
+      const { driver, attributesAdded } = setupGitMergeDriver(process.cwd());
+      logger.success(`Merge driver registered: git config merge.buildwithai.driver "${driver}".`);
+      if (attributesAdded) {
+        logger.success('Added ".buildwithai/context.json merge=buildwithai" to .gitattributes.');
+      } else {
+        logger.info('.gitattributes already maps context.json to the merge driver.');
+      }
+    } catch (error) {
+      logger.error(error.message);
+      process.exit(1);
+    }
+  });
+
+// ─────────────────────────────────────────────────
 // BYOK autonomous step runner (#108)
 // ─────────────────────────────────────────────────
 // Dispatches the current step's prompt to the developer's own AI provider,
