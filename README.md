@@ -247,6 +247,7 @@ the command fails with the list of missing flags instead of waiting for input.
 | `npx build-with-ai init -y --force` | Re-initialize non-interactively, replacing existing state. |
 | `npx build-with-ai next` | Generate and copy the current step prompt to the clipboard. |
 | `npx build-with-ai next --run` | BYOK autonomous mode: send prompt directly to AI provider. |
+| `npx build-with-ai next --run --verify "npm test"` | Autonomous mode with closed-loop verification: retry the step when the check fails. |
 | `npx build-with-ai done` | Record step decisions, archive step logs, and advance to next step. |
 | `npx build-with-ai undo` | Roll back most recent step, restore context snapshot, and prune history. |
 | `npx build-with-ai back` | Step back to previous step without removing recorded context. |
@@ -302,6 +303,16 @@ npx build-with-ai next --run --provider ollama
 ```
 
 Supported providers: `openai`, `anthropic`, `gemini`, `deepseek`, `groq`, `together`, `ollama`.
+
+#### Closed-Loop Verification
+
+By default `next --run` advances the step as soon as the model replies, without checking whether the new code works. Pass `--verify` to run a command (usually the test suite) after the files are written, and let the model heal its own failures:
+
+```bash
+npx build-with-ai next --run --verify "npm test" --max-retries 2
+```
+
+After each attempt the verification command runs in the project root. If it exits non-zero, the failure output is sent back to the model as a self-healing prompt and the step is retried with corrected files, up to `--max-retries` times (default 2). When the command passes, decisions are recorded and the step advances as usual. When retries run out, the step is left open — never advanced on failing code — with the last attempt's files on disk for review (`npx build-with-ai undo` rolls back).
 
 #### Token Budget Warnings
 
