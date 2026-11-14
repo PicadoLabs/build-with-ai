@@ -261,6 +261,8 @@ the command fails with the list of missing flags instead of waiting for input.
 | `npx build-with-ai set <key> <value>` | Update a decision in `context.json` directly from the CLI. |
 | `npx build-with-ai validate` | Check project state, template dependencies, and required decisions without changing files. |
 | `npx build-with-ai validate --template <path>` | Validate a local template file, even before project initialization. |
+| `npx build-with-ai template new <name>` | Scaffold a boilerplate `<name>.json` template with metadata, steps, placeholders, and phases. |
+| `npx build-with-ai template lint <path>` | Strictly validate a template file: schema, step numbers, kebab-case ids, and dependency resolution. |
 | `npx build-with-ai config` | Interactive key-picker to browse and edit decisions. |
 | `npx build-with-ai history [step]` | Inspect archived AI responses and step logs. |
 | `npx build-with-ai resume` | Summary dashboard displaying active state and recommended next action. |
@@ -351,7 +353,7 @@ Add to your editor configuration (`.cursor/mcp.json` or `claude_desktop_config.j
 }
 ```
 
-Exposed tools: `get_workflow_status`, `get_active_prompt`, `complete_step`, and `get_context`. Steps completed via MCP automatically create safe rollback snapshots.
+Exposed tools: `get_workflow_status`, `get_active_prompt`, `complete_step`, `get_context`, `undo_step`, `export_rules`, and `init_project`. Steps completed via MCP automatically create safe rollback snapshots, which `undo_step` restores; `export_rules` syncs decisions into `.cursorrules`, `CLAUDE.md`, and the other editor rule files; `init_project` bootstraps a project in an empty directory from a built-in template.
 
 Exposed prompts: `build-with-ai` (the current step, available as `/build-with-ai` in editors that support MCP prompts) and `step-1` through `step-N` for every step in the template.
 
