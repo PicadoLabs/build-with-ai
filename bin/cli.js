@@ -35,6 +35,7 @@ const {
 } = require('../lib/ui');
 const { runInit } = require('../lib/init');
 const { runValidate } = require('../lib/validate');
+const { scaffoldTemplateFile, lintTemplateFile } = require('../lib/template');
 const { runResume } = require('../lib/resume');
 const { runExport } = require('../lib/export');
 const { runRulesExport } = require('../lib/rules');
@@ -159,6 +160,46 @@ program
   .option('-t, --template <path>', 'Validate a local template JSON file')
   .action((options) => {
     if (!runValidate(options)) process.exitCode = 1;
+  });
+
+// ─────────────────────────────────────────────────
+// Template authoring (#221)
+// ─────────────────────────────────────────────────
+const templateCommand = program.command('template').description('Author and validate workflow templates.');
+
+templateCommand
+  .command('new <name>')
+  .description('Scaffold a boilerplate <name>.json template with metadata, steps, placeholders, and phases.')
+  .action((name) => {
+    try {
+      const { filePath } = scaffoldTemplateFile(name);
+      logger.success(`Template scaffolded at ${filePath}`);
+      console.log();
+      console.log(pc.dim('Next steps:'));
+      console.log(pc.dim('  1. Edit the example steps to fit your workflow.'));
+      console.log(pc.dim(`  2. Run \`npx build-with-ai template lint ${name}.json\` to validate it.`));
+      console.log(pc.dim('  3. Use it with `npx build-with-ai init --template <path>`.'));
+      console.log();
+    } catch (error) {
+      logger.error(error.message);
+      process.exitCode = 1;
+    }
+  });
+
+templateCommand
+  .command('lint <path>')
+  .description(
+    'Strictly validate a template JSON file: schema, step numbers, kebab-case ids, and dependency resolution.'
+  )
+  .action((filePath) => {
+    const { valid, errors } = lintTemplateFile(filePath);
+    if (!valid) {
+      console.error('Template lint failed:');
+      for (const error of errors) console.error(`  ${error}`);
+      process.exitCode = 1;
+      return;
+    }
+    logger.success(`Template is valid: ${filePath}`);
   });
 
 // ─────────────────────────────────────────────────

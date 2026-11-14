@@ -261,6 +261,8 @@ the command fails with the list of missing flags instead of waiting for input.
 | `npx build-with-ai set <key> <value>` | Update a decision in `context.json` directly from the CLI. |
 | `npx build-with-ai validate` | Check project state, template dependencies, and required decisions without changing files. |
 | `npx build-with-ai validate --template <path>` | Validate a local template file, even before project initialization. |
+| `npx build-with-ai template new <name>` | Scaffold a boilerplate `<name>.json` template with metadata, steps, placeholders, and phases. |
+| `npx build-with-ai template lint <path>` | Strictly validate a template file: schema, step numbers, kebab-case ids, and dependency resolution. |
 | `npx build-with-ai config` | Interactive key-picker to browse and edit decisions. |
 | `npx build-with-ai history [step]` | Inspect archived AI responses and step logs. |
 | `npx build-with-ai resume` | Summary dashboard displaying active state and recommended next action. |
