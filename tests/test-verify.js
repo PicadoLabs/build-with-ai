@@ -111,16 +111,16 @@ function runTests() {
   console.log('  ✔ --max-retries parsing rejects bad values.');
 
   // Verification command runner.
-  let verification = runVerificationCommand(`${process.execPath} -e "process.exit(0)"`);
+  let verification = runVerificationCommand(`"${process.execPath}" -e "process.exit(0)"`);
   assert.strictEqual(verification.ok, true);
   assert.strictEqual(verification.exitCode, 0);
-  verification = runVerificationCommand(`${process.execPath} -e "console.error('boom'); process.exit(3)"`);
+  verification = runVerificationCommand(`"${process.execPath}" -e "console.error('boom'); process.exit(3)"`);
   assert.strictEqual(verification.ok, false);
   assert.strictEqual(verification.exitCode, 3);
   assert(verification.output.includes('boom'), 'Failure output is captured');
   verification = runVerificationCommand('definitely-not-a-real-command-xyz');
   assert.strictEqual(verification.ok, false, 'A missing command fails instead of crashing');
-  verification = runVerificationCommand(`${process.execPath} -e "setTimeout(() => {}, 30000)"`, process.cwd(), {
+  verification = runVerificationCommand(`"${process.execPath}" -e "setTimeout(() => {}, 30000)"`, process.cwd(), {
     timeoutMs: 200
   });
   assert.strictEqual(verification.ok, false);

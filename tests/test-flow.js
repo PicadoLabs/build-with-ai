@@ -2454,12 +2454,15 @@ async function runTests() {
   const { runMcpServer, handleRequest, TOOL_DEFINITIONS, PROTOCOL_VERSION } = require('../lib/mcp');
   const { PassThrough } = require('stream');
 
-  assert.strictEqual(TOOL_DEFINITIONS.length, 4, 'MCP server must expose exactly 4 tools');
+  assert.strictEqual(TOOL_DEFINITIONS.length, 7, 'MCP server must expose exactly 7 tools');
   assert.deepStrictEqual(TOOL_DEFINITIONS.map((t) => t.name).sort(), [
     'complete_step',
+    'export_rules',
     'get_active_prompt',
     'get_context',
-    'get_workflow_status'
+    'get_workflow_status',
+    'init_project',
+    'undo_step'
   ]);
   for (const tool of TOOL_DEFINITIONS) {
     assert.strictEqual(typeof tool.description, 'string');
@@ -2648,7 +2651,7 @@ async function runTests() {
     const byId = Object.fromEntries(responses.filter((r) => r.id !== null).map((r) => [r.id, r]));
 
     assert.strictEqual(byId[1].result.serverInfo.name, 'build-with-ai');
-    assert.strictEqual(byId[2].result.tools.length, 4);
+    assert.strictEqual(byId[2].result.tools.length, 7);
 
     const statusBefore = JSON.parse(byId[3].result.content[0].text);
     assert.strictEqual(statusBefore.currentStep, 1);
