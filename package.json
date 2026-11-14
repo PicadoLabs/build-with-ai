@@ -16,7 +16,7 @@
     "CONTRIBUTING.md"
   ],
   "scripts": {
-    "test": "node tests/test-flow.js && node tests/test-readme-setup.js && node tests/test-dashboard.js && node tests/test-mcp.js && node tests/test-validate.js && node tests/test-template.js && node tests/test-merge-driver.js",
+    "test": "node tests/test-flow.js && node tests/test-readme-setup.js && node tests/test-dashboard.js && node tests/test-mcp.js && node tests/test-validate.js && node tests/test-template.js && node tests/test-merge-driver.js && node tests/test-verify.js",
     "test:e2e": "node tests/e2e-test.js",
     "test:all": "node tests/test-flow.js && node tests/test-dashboard.js && node tests/test-mcp.js && node tests/test-validate.js && node tests/test-template.js && node tests/test-merge-driver.js && node tests/e2e-test.js",
     "lint": "eslint \"{bin,lib,tests,.github/scripts}/**/*.js\"",
