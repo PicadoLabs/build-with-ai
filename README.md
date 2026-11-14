@@ -267,6 +267,8 @@ the command fails with the list of missing flags instead of waiting for input.
 | `npx build-with-ai history [step]` | Inspect archived AI responses and step logs. |
 | `npx build-with-ai resume` | Summary dashboard displaying active state and recommended next action. |
 | `npx build-with-ai ui` | Open a local browser dashboard for progress, phases, decisions, history, and exports. |
+| `npx build-with-ai git-setup` | Register the git merge driver for `.buildwithai/context.json` in this repository. |
+| `npx build-with-ai merge-driver %O %A %B` | Three-way merge for `context.json` (invoked by git; writes the merged result to `%A`). |
 
 ### Documentation & Editor Rules
 
@@ -318,6 +320,16 @@ npx build-with-ai next --run --provider ollama --context-window 32768
 ```
 
 Context windows come from a conservative built-in table of known models, with a default per provider. Ollama always assumes 8192 tokens, because its OpenAI-compatible endpoint is limited by the server's `num_ctx` setting rather than the model's full window. Override the window with `--context-window`, the `<PROVIDER>_CONTEXT_WINDOW` environment variable (for example `OLLAMA_CONTEXT_WINDOW=32768`), or the same key in `.buildwithai/.env`. Providers whose hosted models vary (`groq`, `together`, `jev`) report an unknown window and skip the warning unless the model is recognized or overridden.
+
+### Git Merge Driver for context.json
+
+When two branches both touch `.buildwithai/context.json`, a plain git merge leaves conflict markers inside the JSON, which breaks parsing and renders every CLI command unusable. Register the custom merge driver once per repository and git merges the file structurally instead:
+
+```bash
+npx build-with-ai git-setup
+```
+
+This sets `merge.buildwithai.driver` in `.git/config` and adds `.buildwithai/context.json merge=buildwithai` to `.gitattributes`. From then on, merging branches with independent additions to `context.json` completes without syntax errors: keys changed on one side only are taken from that side, identical changes are kept once, and conflicting keys resolve to the newer timestamped value when both sides carry one. Any remaining conflict keeps the current-branch value, is logged, and is recorded under `mergeConflicts` in the merged file — the file always stays valid JSON.
 
 ### Model Context Protocol (MCP)
 
