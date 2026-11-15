@@ -325,38 +325,70 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
     logger.warn(budgetWarning);
   }
 
-  let response;
-  try {
-    if (options.pipeline) {
-      const requestedPipeline = options.pipeline.split(',').map((agent) => agent.trim().toLowerCase());
+  // Closed-loop verification (#214): when --verify is set, the step's
+  // files are checked by running the command after each attempt, and a
+  // failure sends the output back to the model for a corrected attempt.
+  const verifyCommand =
+    typeof options.verify === 'string' && options.verify.trim() !== '' ? options.verify.trim() : null;
+  let maxRetries = 0;
+  let verifyHelpers = null;
+  if (verifyCommand) {
+    const { parseMaxRetries, runVerificationCommand, buildSelfHealingPrompt } = require('../lib/verify');
+    try {
+      maxRetries = parseMaxRetries(options.maxRetries);
+    } catch (err) {
+      logger.error(err.message);
+      process.exit(1);
+    }
+    verifyHelpers = { runVerificationCommand, buildSelfHealingPrompt };
+  }
 
-      if (requestedPipeline.join(',') !== 'architect,coder,reviewer') {
-        throw new Error('Invalid pipeline. Use --pipeline architect,coder,reviewer');
+  // Dispatches one model call: the first attempt sends the step prompt;
+  // a retry sends the step prompt plus the self-healing prompt built from
+  // the failed verification output. A retry always uses a plain chat
+  // completion, even when the first attempt ran the pipeline — re-running
+  // Architect → Coder → Reviewer for a test failure would discard the
+  // reviewer's approval of the rest of the step.
+  async function callModel(healingPrompt) {
+    try {
+      if (healingPrompt) {
+        return await chatCompletion(providerConfig, [
+          { role: 'system', content: system },
+          { role: 'user', content: `${resolvedPrompt}\n\n${healingPrompt}` }
+        ]);
       }
+      if (options.pipeline) {
+        const requestedPipeline = options.pipeline.split(',').map((agent) => agent.trim().toLowerCase());
 
-      logger.info('Running Architect → Coder → Reviewer pipeline...');
+        if (requestedPipeline.join(',') !== 'architect,coder,reviewer') {
+          throw new Error('Invalid pipeline. Use --pipeline architect,coder,reviewer');
+        }
 
-      const pipelineResult = await runArchitectCoderPipeline({
-        providerConfig,
-        resolvedPrompt,
-        stepNum: currentStepNum,
-        totalSteps,
-        targetFiles,
-        context
-      });
+        logger.info('Running Architect → Coder → Reviewer pipeline...');
 
-      // Use only the Coder response returned after Reviewer approval.
-      response = pipelineResult.coderResponse;
-    } else {
-      response = await chatCompletion(providerConfig, [
+        const pipelineResult = await runArchitectCoderPipeline({
+          providerConfig,
+          resolvedPrompt,
+          stepNum: currentStepNum,
+          totalSteps,
+          targetFiles,
+          context
+        });
+
+        // Use only the Coder response returned after Reviewer approval.
+        return pipelineResult.coderResponse;
+      }
+      return await chatCompletion(providerConfig, [
         { role: 'system', content: system },
         { role: 'user', content: resolvedPrompt }
       ]);
+    } catch (err) {
+      logger.error(`AI request failed: ${err.message}`);
+      process.exit(1);
     }
-  } catch (err) {
-    logger.error(`AI request failed: ${err.message}`);
-    process.exit(1);
   }
+
+  let response = await callModel(null);
 
   // Snapshot state.json + context.json BEFORE this step's files, decisions
   // and advance are recorded, so `npx build-with-ai undo` can roll back
@@ -369,50 +401,121 @@ async function runAutonomousStep({ state, context, totalSteps, currentStepNum, r
   // targetFiles lets the parser accept extension-less declared targets
   // (e.g. Dockerfile) while still rejecting language-tagged fences (#134).
   const cwd = process.cwd();
-  const plan = planStepResponse(cwd, response, targetFiles);
-  // Blocks without a closing fence are truncated: warn and never write
-  // partial content to disk (#213).
-  for (const truncatedPath of plan.truncated) {
-    logger.warn(`Skipping truncated file block "${truncatedPath}" (missing closing fence) — not written.`);
-  }
+  let plan;
   let apply = true;
-  if (plan.blocks.length === 0) {
-    logger.warn('The AI response contained no file blocks.');
-  } else {
-    for (const unsafePath of plan.unsafe) {
-      logger.warn(`Skipping unsafe path "${unsafePath}" (outside the project directory).`);
+  let result;
+  for (let attempt = 0; ; attempt++) {
+    plan = planStepResponse(cwd, response, targetFiles);
+    // Blocks without a closing fence are truncated: warn and never write
+    // partial content to disk (#213).
+    for (const truncatedPath of plan.truncated) {
+      logger.warn(`Skipping truncated file block "${truncatedPath}" (missing closing fence) — not written.`);
     }
-
-    if (options.review && plan.applicable.length > 0) {
-      console.log();
-      console.log(pc.bold(pc.cyan('Proposed changes:')));
-      for (const { block, absolute } of plan.applicable) {
-        const oldText = fs.existsSync(absolute) ? fs.readFileSync(absolute, 'utf8') : '';
-        console.log();
-        console.log(pc.bold(`--- ${block.path}${oldText ? '' : ' (new file)'}`));
-        console.log(renderDiff(oldText, block.content));
+    if (plan.blocks.length === 0) {
+      logger.warn('The AI response contained no file blocks.');
+    } else {
+      for (const unsafePath of plan.unsafe) {
+        logger.warn(`Skipping unsafe path "${unsafePath}" (outside the project directory).`);
       }
-      console.log();
-      ({ apply } = await safePrompt([
-        { type: 'confirm', name: 'apply', message: 'Apply these file changes?', default: true }
-      ]));
-    }
-    if (!apply) {
-      console.log(pc.dim('File changes discarded.'));
-    }
-  }
 
-  // 2. Decisions → context, 3. history + advance, like `done` does.
-  const result = applyStepResponse({
-    cwd,
-    state,
-    context,
-    stepNum: currentStepNum,
-    response,
-    plan,
-    writeFiles: apply,
-    force: options.force === true
-  });
+      // The review prompt runs once, on the first attempt; a retry after a
+      // failed verification re-applies the corrected blocks directly.
+      if (options.review && attempt === 0 && plan.applicable.length > 0) {
+        console.log();
+        console.log(pc.bold(pc.cyan('Proposed changes:')));
+        for (const { block, absolute } of plan.applicable) {
+          const oldText = fs.existsSync(absolute) ? fs.readFileSync(absolute, 'utf8') : '';
+          console.log();
+          console.log(pc.bold(`--- ${block.path}${oldText ? '' : ' (new file)'}`));
+          console.log(renderDiff(oldText, block.content));
+        }
+        console.log();
+        ({ apply } = await safePrompt([
+          { type: 'confirm', name: 'apply', message: 'Apply these file changes?', default: true }
+        ]));
+      }
+      if (!apply) {
+        console.log(pc.dim('File changes discarded.'));
+      }
+    }
+
+    // No verification requested, or the review rejected the changes:
+    // finalize exactly like `next --run` always has (decisions, history,
+    // advance) and stop.
+    if (!verifyCommand || !apply) {
+      result = applyStepResponse({
+        cwd,
+        state,
+        context,
+        stepNum: currentStepNum,
+        response,
+        plan,
+        writeFiles: apply,
+        force: options.force === true
+      });
+      break;
+    }
+
+    // Verification pass: write the files WITHOUT recording decisions or
+    // advancing, so the check runs against the real files while a failure
+    // still leaves the step open.
+    result = applyStepResponse({
+      cwd,
+      state,
+      context,
+      stepNum: currentStepNum,
+      response,
+      plan,
+      writeFiles: apply,
+      force: options.force === true,
+      finalize: false
+    });
+    const { runVerificationCommand, buildSelfHealingPrompt } = verifyHelpers;
+    const verification = runVerificationCommand(verifyCommand, cwd);
+    if (verification.ok) {
+      logger.success(`Verification passed: \`${verifyCommand}\`.`);
+      // Record decisions, history and the advance from the passing
+      // response; the files are already on disk, so do not write them
+      // again. The write report still comes from the verification pass.
+      const finalized = applyStepResponse({
+        cwd,
+        state,
+        context,
+        stepNum: currentStepNum,
+        response,
+        plan,
+        writeFiles: false,
+        force: options.force === true
+      });
+      result = { ...finalized, writes: result.writes, files: result.files, invalid: result.invalid };
+      break;
+    }
+    if (attempt >= maxRetries) {
+      logger.error(
+        `Verification failed after ${attempt + 1} attempt(s): \`${verifyCommand}\` ` +
+          (verification.timedOut
+            ? 'timed out.'
+            : `exited with code ${verification.exitCode === null ? 'unknown' : verification.exitCode}.`) +
+          ` Step ${currentStepNum} was NOT advanced — fix the failing check and run ` +
+          "`npx build-with-ai next --run` again. The last attempt's files are on disk for review; " +
+          'run `npx build-with-ai undo` to roll back.'
+      );
+      process.exit(1);
+    }
+    logger.warn(
+      `Verification failed (attempt ${attempt + 1}/${maxRetries + 1}): ` +
+        (verification.timedOut ? 'the command timed out.' : `exit code ${verification.exitCode}.`) +
+        ' Asking the model to fix it.'
+    );
+    response = await callModel(
+      buildSelfHealingPrompt({
+        command: verifyCommand,
+        verification,
+        stepNum: currentStepNum,
+        totalSteps
+      })
+    );
+  }
   for (const write of result.writes) {
     if (write.written) {
       logger.success(`${write.created ? 'Created' : 'Updated'} ${write.path}`);
@@ -529,6 +632,13 @@ async function runNextCommand(options = {}) {
       options
     });
     return;
+  }
+
+  // --verify / --max-retries only mean anything with --run (#214).
+  if (options.verify) {
+    logger.warn('--verify only applies with --run; ignoring it for this command.');
+  } else if (options.maxRetries !== undefined) {
+    logger.warn('--max-retries only applies with --run --verify; ignoring it for this command.');
   }
 
   // --json mode
@@ -841,6 +951,14 @@ program
   .option('--review', 'With --run: show a colored diff of the proposed file changes and confirm before applying')
   .option('--force', 'With --run: write file blocks even when syntax validation fails')
   .option('--pipeline <agents>', 'Run a multi-agent pipeline: architect,coder,reviewer')
+  .option(
+    '--verify <command>',
+    'With --run: run this command (e.g. "npm test") after writing the step files, and retry the step with a self-healing prompt when it fails'
+  )
+  .option(
+    '--max-retries <n>',
+    'With --verify: how many self-healing retries to attempt after a failed verification (default 2)'
+  )
   .action(async (options) => {
     await runNextCommand(options);
   });
