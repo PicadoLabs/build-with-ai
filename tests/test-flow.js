@@ -2836,6 +2836,7 @@ async function runTests() {
     findTruncatedFileBlocks,
     validateBlockContent,
     parseDecisionsBlock: parseAiDecisions,
+    extractJson,
     resolveTargetPath,
     writeFileBlocks,
     renderDiff,
@@ -2844,6 +2845,56 @@ async function runTests() {
   } = require('../lib/aiClient');
 
   console.log('\n▶ Test: Multi-agent pipeline');
+
+  // Parser tests: extractJson markdown code-fence stripping (#253)
+  assert.deepStrictEqual(extractJson('{"approved": true}'), { approved: true });
+  assert.deepStrictEqual(extractJson('```json\n{"approved": true}\n```'), { approved: true });
+  assert.deepStrictEqual(extractJson('```\n{"approved": true}\n```'), { approved: true });
+  assert.deepStrictEqual(extractJson('```JSON\n{"approved": true}\n```'), { approved: true });
+  assert.deepStrictEqual(extractJson('  \n\t ```json\n{"approved": true}\n``` \n '), { approved: true });
+  assert.deepStrictEqual(extractJson('```json\r\n{\r\n  "approved": true\r\n}\r\n```'), { approved: true });
+  assert.deepStrictEqual(extractJson('{"plan": "Use ```markdown``` for documentation"}'), {
+    plan: 'Use ```markdown``` for documentation'
+  });
+  assert.deepStrictEqual(extractJson('```json\n{"plan": "Use ```markdown``` for documentation"}\n```'), {
+    plan: 'Use ```markdown``` for documentation'
+  });
+  assert.throws(() => extractJson(''), /Unexpected end of JSON input|Unexpected token/);
+  assert.throws(() => extractJson('   \r\n  '), /Unexpected end of JSON input|Unexpected token/);
+  assert.throws(
+    () => extractJson('```json\n{ invalid json }\n```'),
+    (error) => error instanceof SyntaxError
+  );
+  assert.throws(
+    () => extractJson(null),
+    (error) => error instanceof TypeError
+  );
+  assert.throws(
+    () => extractJson(undefined),
+    (error) => error instanceof TypeError
+  );
+  assert.throws(
+    () => extractJson(123),
+    (error) => error instanceof TypeError
+  );
+  assert.deepStrictEqual(
+    extractJson('Here is the architecture plan:\n```json\n{"approved": true}\n```\nHope that helps!'),
+    { approved: true }
+  );
+  assert.throws(
+    () => extractJson('Option 1:\n```json\n{"approved": false}\n```\nOption 2:\n```json\n{"approved": true}\n```'),
+    /Multiple candidate JSON code blocks/
+  );
+  assert.deepStrictEqual(
+    extractJson('Execute command:\n```bash\nnpm test\n```\nResult:\n```json\n{"approved": true}\n```'),
+    { approved: true }
+  );
+  assert.throws(
+    () => extractJson('```json\n{"approved": true}\n```\nUnfinished:\n```json\n{"approved": false}'),
+    /Unclosed markdown code fence/
+  );
+  assert.throws(() => extractJson('```json\n{"approved": true}'), /Unclosed markdown code fence/);
+  console.log('  ✔ extractJson parses plain, fenced, CRLF and backtick-containing JSON, and rejects invalid inputs.');
 
   const pipelineProviderConfig = resolveProviderConfig({
     provider: 'openai',
@@ -2901,6 +2952,30 @@ async function runTests() {
   assert.strictEqual(fs.existsSync(path.join(process.cwd(), pipelineTarget)), false);
   console.log('  ✔ Architect → Coder → Reviewer succeeds without writing files.');
 
+  const fencedArchitectureResponse = `\`\`\`json\n${architectureResponse}\n\`\`\``;
+  const fencedReviewerResponse = `\`\`\`json\n${JSON.stringify({ approved: true, issues: [] })}\n\`\`\``;
+
+  const fencedPipeline = await runArchitectCoderPipeline({
+    ...pipelineArgs,
+    fetchImpl: createPipelineFetch([fencedArchitectureResponse, coderResponse, fencedReviewerResponse])
+  });
+
+  assert.strictEqual(fencedPipeline.review.approved, true);
+  assert.strictEqual(fencedPipeline.coderResponse, coderResponse);
+  console.log('  ✔ Architect and Reviewer responses with markdown code fences parse cleanly.');
+
+  const plainFencedPipeline = await runArchitectCoderPipeline({
+    ...pipelineArgs,
+    fetchImpl: createPipelineFetch([
+      `\`\`\`\r\n${architectureResponse}\r\n\`\`\``,
+      coderResponse,
+      `\`\`\`\r\n${JSON.stringify({ approved: true, issues: [] })}\r\n\`\`\``
+    ])
+  });
+
+  assert.strictEqual(plainFencedPipeline.review.approved, true);
+  assert.strictEqual(plainFencedPipeline.coderResponse, coderResponse);
+
   await assert.rejects(
     runArchitectCoderPipeline({
       ...pipelineArgs,
@@ -2925,6 +3000,24 @@ async function runTests() {
       fetchImpl: createPipelineFetch(['Invalid JSON'])
     }),
     /Architect output is invalid JSON/
+  );
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      fetchImpl: createPipelineFetch([architectureResponse, coderResponse, '```json\n{ not valid reviewer json }\n```'])
+    }),
+    /Reviewer output is invalid JSON/
+  );
+
+  await assert.rejects(
+    runArchitectCoderPipeline({
+      ...pipelineArgs,
+      fetchImpl: createPipelineFetch([
+        'Option 1:\n```json\n{"contextValid": true}\n```\nOption 2:\n```json\n{"contextValid": true}\n```'
+      ])
+    }),
+    /Multiple candidate JSON code blocks/
   );
 
   let invalidContextFetchCalled = false;
