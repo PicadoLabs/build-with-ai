@@ -2885,6 +2885,10 @@ async function runTests() {
     () => extractJson('Option 1:\n```json\n{"approved": false}\n```\nOption 2:\n```json\n{"approved": true}\n```'),
     /Multiple candidate JSON code blocks/
   );
+  assert.throws(() => extractJson('```js\n{"approved": true}\n```'), /Unexpected end of JSON input|Unexpected token/);
+  assert.deepStrictEqual(extractJson('Notes:\n```text\nnot json\n```\nResult:\n```\n{"approved": true}\n```'), {
+    approved: true
+  });
   assert.deepStrictEqual(
     extractJson('Execute command:\n```bash\nnpm test\n```\nResult:\n```json\n{"approved": true}\n```'),
     { approved: true }
