@@ -78,12 +78,35 @@ const {
   countUniqueCompletedSteps
 } = require('../lib/ui');
 
-async function runIsolatedClipboardFallback(moduleSource) {
+async function runIsolatedClipboardFallback(moduleSource, options = {}) {
   const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-clipboard-'));
   const helperDir = path.join(isolatedRoot, 'lib');
   const helperPath = path.join(helperDir, 'clipboard.js');
 
+  const hadIsTTY = Object.prototype.hasOwnProperty.call(process.stdout, 'isTTY');
+  const origIsTTY = process.stdout.isTTY;
+  const origWrite = process.stdout.write;
+
+  const isTTY = typeof options === 'object' && options !== null && 'isTTY' in options ? Boolean(options.isTTY) : false;
+  const capturedWrites = Array.isArray(options?.writes) ? options.writes : null;
+  const text = options?.text !== undefined ? options.text : 'fallback test';
+
   try {
+    process.stdout.isTTY = isTTY;
+    if (isTTY || capturedWrites) {
+      process.stdout.write = (chunk, encoding, cb) => {
+        const callback = typeof encoding === 'function' ? encoding : cb;
+        const str = typeof chunk === 'string' ? chunk : chunk.toString();
+        if (capturedWrites) {
+          capturedWrites.push(str);
+        }
+        if (typeof callback === 'function') {
+          callback();
+        }
+        return true;
+      };
+    }
+
     fs.mkdirSync(helperDir, { recursive: true });
     fs.copyFileSync(path.join(__dirname, '..', 'lib', 'clipboard.js'), helperPath);
 
@@ -103,8 +126,14 @@ async function runIsolatedClipboardFallback(moduleSource) {
     }
 
     const isolatedHelper = require(helperPath);
-    return await isolatedHelper.copyToClipboard('fallback test');
+    return await isolatedHelper.copyToClipboard(text);
   } finally {
+    if (hadIsTTY) {
+      process.stdout.isTTY = origIsTTY;
+    } else {
+      delete process.stdout.isTTY;
+    }
+    process.stdout.write = origWrite;
     delete require.cache[helperPath];
     fs.rmSync(isolatedRoot, { recursive: true, force: true });
   }
@@ -938,11 +967,46 @@ async function runTests() {
     'OSC 52 must not write when the stream is not a TTY'
   );
   // A clipboardy failure in a remote session must fall through to OSC 52
-  // instead of crashing; without a TTY the copy still resolves to false.
+  // instead of crashing; without a TTY the copy still resolves to false (#199, #258).
   const throwingClipboard = await runIsolatedClipboardFallback(
     'module.exports = { writeSync: () => { throw new Error("no X server"); } };\n'
   );
   assert.strictEqual(throwingClipboard, false, 'Throwing clipboardy must resolve to false without a TTY');
+
+  // When a TTY stream is present and clipboardy fails, copyToClipboard() must fall through
+  // to OSC 52, write the sequence, and return true (#199, #258).
+  const origIsTTYBefore = process.stdout.isTTY;
+  const origWriteBefore = process.stdout.write;
+  const ttyWrites = [];
+  const ttyClipboard = await runIsolatedClipboardFallback(
+    'module.exports = { writeSync: () => { throw new Error("no X server"); } };\n',
+    { isTTY: true, writes: ttyWrites }
+  );
+  assert.strictEqual(ttyClipboard, true, 'Throwing clipboardy with a TTY must resolve to true via OSC 52');
+  assert.strictEqual(ttyWrites.length, 1, 'OSC 52 must write exactly one sequence when falling back');
+  assert.strictEqual(
+    ttyWrites[0],
+    `\x1b]52;c;${Buffer.from('fallback test', 'utf8').toString('base64')}\x07`,
+    'OSC 52 sequence must match expected base64 payload when falling back'
+  );
+  assert.strictEqual(
+    process.stdout.isTTY,
+    origIsTTYBefore,
+    'process.stdout.isTTY must be restored after isolated fallback'
+  );
+  assert.strictEqual(
+    process.stdout.write,
+    origWriteBefore,
+    'process.stdout.write must be restored after isolated fallback'
+  );
+
+  // Verify stream state and mocks are restored even when the fallback throws an error (#258)
+  await assert.rejects(
+    runIsolatedClipboardFallback(null, { isTTY: true, text: Symbol('invalid-text') }),
+    (error) => error instanceof TypeError
+  );
+  assert.strictEqual(process.stdout.isTTY, origIsTTYBefore, 'process.stdout.isTTY must be restored after error');
+  assert.strictEqual(process.stdout.write, origWriteBefore, 'process.stdout.write must be restored after error');
   console.log('  ✔ OSC 52 fallback writes the base64 sequence on a TTY and stays silent otherwise.');
 
   // Test 4d: Heuristic decision parsing for `done --from-clipboard`
