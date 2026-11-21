@@ -987,6 +987,24 @@ async function runTests() {
   const authParsed = parseDecisions(authTable, ['decisions.authStrategy']);
   assert.strictEqual(authParsed.found['decisions.authStrategy'], 'NextAuth.js with JWT');
 
+  // Regression (#252): bold labels with the colon inside the asterisks,
+  // and decision tables with extra (rationale) columns.
+  const boldColon = parseDecisions('- **Database:** PostgreSQL\n* **Auth:** JWT', [
+    'decisions.database',
+    'decisions.auth'
+  ]);
+  assert.strictEqual(boldColon.found['decisions.database'], 'PostgreSQL');
+  assert.strictEqual(boldColon.found['decisions.auth'], 'JWT');
+  assert.deepStrictEqual(boldColon.missing, []);
+
+  const wideTable = parseDecisions(
+    '| Decision Key | Selected Choice | Rationale |\n| --- | --- | --- |\n| Database | PostgreSQL | Fast |\n| Auth | JWT | Standard |',
+    ['decisions.database', 'decisions.auth']
+  );
+  assert.strictEqual(wideTable.found['decisions.database'], 'PostgreSQL');
+  assert.strictEqual(wideTable.found['decisions.auth'], 'JWT');
+  assert.deepStrictEqual(wideTable.missing, []);
+
   const optionalPipes = parseDecisions('Database | `SQLite`', ['decisions.database']);
   assert.strictEqual(optionalPipes.found['decisions.database'], 'SQLite');
 
