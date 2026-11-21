@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Fail-Fast on Partial Flags:** when stdin is not a terminal and only some init values are supplied, `init` exits 1 with the missing flag names instead of waiting for input that will never arrive.
+- **Decision Parsing of Bold Colons and Wide Tables:** `parseDecisions` now extracts `- **Key:** Value` pairs (colon inside the bold markers) and reads key/value from the first two cells of Markdown decision tables with extra columns (e.g. Rationale), instead of dropping those rows.
 
 ---
 
