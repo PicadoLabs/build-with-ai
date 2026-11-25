@@ -476,6 +476,32 @@ async function testUndoStep() {
   }
 }
 
+async function testCompleteStepDecisionNamespace() {
+  console.log('\n▶ Test: complete_step stores unprefixed decisions under decisions.* (#255)');
+  const dir = createProject();
+  try {
+    const host = await startHost(dir);
+    const result = await host.callNamedTool('complete_step', {
+      decisions: { database: 'PostgreSQL', auth: 'JWT', 'decisions.cache': 'Redis' },
+      response: '# Step 1 done\n\nPicked the stack.'
+    });
+    assert.ok(!result.isError, result.content[0].text);
+    const summary = JSON.parse(result.content[0].text);
+    assert.deepStrictEqual(summary.recordedDecisions, ['decisions.database', 'decisions.auth', 'decisions.cache']);
+    const context = loadContext(dir);
+    assert.strictEqual(context.decisions.database, 'PostgreSQL');
+    assert.strictEqual(context.decisions.auth, 'JWT');
+    assert.strictEqual(context.decisions.cache, 'Redis');
+    assert.strictEqual(context.database, undefined, 'Unprefixed keys are not written at the top level');
+    assert.strictEqual(context.auth, undefined, 'Unprefixed keys are not written at the top level');
+    assert.strictEqual(context.decisions.decisions, undefined, 'Pre-prefixed keys are not double-prefixed');
+    await host.close();
+    console.log('  ✔ complete_step namespaces decisions like the CLI runner.');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function testExportRules() {
   console.log('\n▶ Test: export_rules syncs decisions into editor rule files');
   const dir = createProject();
@@ -590,6 +616,7 @@ async function runTests() {
   await testDryRunAndValidation();
   await testFailures();
   await testUndoStep();
+  await testCompleteStepDecisionNamespace();
   await testExportRules();
   await testInitProject();
   completed = true;
