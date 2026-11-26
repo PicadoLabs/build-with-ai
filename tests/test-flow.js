@@ -3614,6 +3614,62 @@ async function runTests() {
     true,
     'JSX is not parser-checked (needs a transpiler) and always passes'
   );
+  // JSX in .js files is delimiter-checked instead of node --check (#256)
+  assert.strictEqual(
+    validateBlockContent({
+      path: 'src/App.js',
+      content: 'export default function Header() {\n  return <header className="navbar"><h1>Title</h1></header>;\n}\n'
+    }).valid,
+    true,
+    'valid React component in .js must pass validation'
+  );
+  assert.strictEqual(
+    validateBlockContent({
+      path: 'src/App.js',
+      content: 'import React from \'react\';\nconst el = <div className="x">Hello</div>;\nexport default el;\n'
+    }).valid,
+    true,
+    'JSX with a React import in .js must pass validation'
+  );
+  assert.strictEqual(
+    validateBlockContent({
+      path: 'src/App.js',
+      content: 'export default function Broken() {\n  return <div>oops</div>;\n'
+    }).valid,
+    false,
+    'JSX with an unclosed function body must fail validation'
+  );
+  assert.strictEqual(
+    validateBlockContent({
+      path: 'src/App.js',
+      content: 'export default function Broken() {\n  return <div><span>oops</div>;\n}\n'
+    }).valid,
+    true,
+    'JSX tag mismatch is out of scope for the delimiter check and must not block the write'
+  );
+  assert.strictEqual(
+    validateBlockContent({ path: 'src/app.js', content: 'const ok = a < b;\nfunction broken(' }).valid,
+    false,
+    'a < comparison must not be mistaken for JSX (plain JS still goes through node --check)'
+  );
+  assert.strictEqual(
+    validateBlockContent({
+      path: 'src/App.js',
+      content:
+        'export default function Greet({ name }) {\n  const label = `Hello ${name}`;\n  return <p>{label}</p>;\n}\n'
+    }).valid,
+    true,
+    'JSX with a template-literal interpolation and nested braces must pass validation'
+  );
+  assert.strictEqual(
+    validateBlockContent({
+      path: 'src/App.js',
+      content:
+        'export default function List({ items }) {\n  return <ul>{items.map((i) => <li key={i}>{i}</li>)}</ul>;\n}\n'
+    }).valid,
+    true,
+    'JSX with nested braces and an arrow function must pass validation'
+  );
   console.log('  ✔ Truncated-block detection and syntax validation.');
 
   console.log('  ✔ File-block and decisions parsing.');
