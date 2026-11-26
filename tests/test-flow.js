@@ -58,6 +58,7 @@ const {
   generateRulesContent,
   mergeRulesFile,
   getRuleFilePaths,
+  getRulesConfigPath,
   RULES_BLOCK_START,
   RULES_BLOCK_END
 } = require('../lib/rules');
@@ -2391,6 +2392,121 @@ async function runTests() {
       } else {
         process.env.BUILD_WITH_AI_BRANCH_SCOPED = previousEnv;
       }
+    }
+  }
+
+  // ── Branch-scoped rules config + AI .env isolation (#257) ──
+  // rules.config.json and .buildwithai/.env must resolve through
+  // getStorageDir() like state.json does, or two branches silently share
+  // one rules filter and one set of API keys.
+  {
+    const { loadDotEnv, resolveProviderConfig } = require('../lib/aiClient');
+    const previousEnv = process.env.BUILD_WITH_AI_BRANCH_SCOPED;
+    const previousDeepseekKey = process.env.DEEPSEEK_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
+    const scopedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-branch-scoped-config-'));
+    try {
+      process.env.BUILD_WITH_AI_BRANCH_SCOPED = '1';
+      execSync('git init -b main', { cwd: scopedDir, stdio: 'ignore' });
+      execSync('git -c user.email=test@test.com -c user.name=test commit --allow-empty -m init', {
+        cwd: scopedDir,
+        stdio: 'ignore'
+      });
+      initState(
+        {
+          projectName: 'Scoped Config Demo',
+          templateId: 'web-app',
+          templateTitle: 'Web App',
+          experienceLevel: 'Intermediate',
+          projectIdea: 'A scoped demo project.',
+          totalSteps: 6
+        },
+        scopedDir
+      );
+      saveContext(
+        {
+          project: { name: 'Scoped Config Demo', idea: 'A scoped demo project.' },
+          decisions: {
+            frontendStack: 'Next.js 14',
+            database: 'PostgreSQL with Prisma',
+            customApi: 'Custom API decision'
+          }
+        },
+        scopedDir
+      );
+
+      const branchDir = path.join(scopedDir, '.buildwithai', 'branches', 'main');
+      const sharedDir = path.join(scopedDir, '.buildwithai');
+
+      // Branch-scoped config + .env win; decoys in the shared root must be ignored.
+      fs.writeFileSync(
+        path.join(branchDir, 'rules.config.json'),
+        JSON.stringify({ includeKeys: ['decisions.database'] }, null, 2),
+        'utf8'
+      );
+      fs.writeFileSync(path.join(branchDir, '.env'), 'DEEPSEEK_API_KEY=branch-key\n', 'utf8');
+      fs.writeFileSync(
+        path.join(sharedDir, 'rules.config.json'),
+        JSON.stringify({ includeKeys: ['decisions.customApi'] }, null, 2),
+        'utf8'
+      );
+      fs.writeFileSync(path.join(sharedDir, '.env'), 'DEEPSEEK_API_KEY=root-key\n', 'utf8');
+
+      assert.strictEqual(
+        getRulesConfigPath(scopedDir),
+        path.join(branchDir, 'rules.config.json'),
+        'rules config path must resolve inside the branch-scoped storage dir'
+      );
+      assert.strictEqual(
+        loadDotEnv(scopedDir).DEEPSEEK_API_KEY,
+        'branch-key',
+        '.env must be read from the branch-scoped dir, not the shared root'
+      );
+      assert.strictEqual(
+        resolveProviderConfig({ provider: 'deepseek', cwd: scopedDir }).apiKey,
+        'branch-key',
+        'provider config must use the branch-scoped .env'
+      );
+
+      await runRulesExport(scopedDir);
+      const claude = fs.readFileSync(path.join(scopedDir, 'CLAUDE.md'), 'utf8');
+      assert(claude.includes('PostgreSQL with Prisma'), 'branch-scoped rules config must filter the export');
+      assert(!claude.includes('Custom API decision'), 'shared-root rules config must not leak into a scoped export');
+      assert(!claude.includes('Next.js 14'), 'decisions outside the branch includeKeys must be omitted');
+
+      // A different branch starts with no rules config or .env of its own.
+      execSync('git checkout -b feature/auth', { cwd: scopedDir, stdio: 'ignore' });
+      assert.strictEqual(
+        getRulesConfigPath(scopedDir),
+        path.join(scopedDir, '.buildwithai', 'branches', 'feature-auth', 'rules.config.json'),
+        'branch switch must move the rules config path'
+      );
+      assert.deepStrictEqual(loadDotEnv(scopedDir), {}, 'a new branch must not inherit another branch .env');
+      execSync('git checkout main', { cwd: scopedDir, stdio: 'ignore' });
+
+      // Scoping off: both resolve back to the shared root.
+      delete process.env.BUILD_WITH_AI_BRANCH_SCOPED;
+      assert.strictEqual(
+        getRulesConfigPath(scopedDir),
+        path.join(sharedDir, 'rules.config.json'),
+        'rules config path must fall back to the shared root when scoping is off'
+      );
+      assert.strictEqual(
+        loadDotEnv(scopedDir).DEEPSEEK_API_KEY,
+        'root-key',
+        '.env must fall back to the shared root when scoping is off'
+      );
+
+      console.log('  ✔ branch-scoped storage isolates rules config and AI .env per branch (#257).');
+    } finally {
+      if (previousEnv === undefined) {
+        delete process.env.BUILD_WITH_AI_BRANCH_SCOPED;
+      } else {
+        process.env.BUILD_WITH_AI_BRANCH_SCOPED = previousEnv;
+      }
+      if (previousDeepseekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+      else process.env.DEEPSEEK_API_KEY = previousDeepseekKey;
+      fs.rmSync(scopedDir, { recursive: true, force: true });
     }
   }
 
